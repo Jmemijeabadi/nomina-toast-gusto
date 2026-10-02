@@ -217,12 +217,20 @@ class ToastClient:
                 if motivo:
                     detalle.append(f"  Toast dice: {motivo}")
                 detalle += [
-                    "  Si las longitudes son 32 y 64, el valor no se corto al "
-                    "pegarlo: Toast esta rechazando el par en si.",
-                    "  Revisa, en orden: que el ID y el secret sean del MISMO "
-                    "credential (no uno viejo con uno nuevo); que el credential "
-                    "sea de tipo machine client; y que la integracion este "
-                    "habilitada para los restaurantes.",
+                    "  Si las longitudes son 32 y 64, no se corto al pegarlo.",
+                    "",
+                    "  Un 401 en el endpoint de autenticacion significa que Toast "
+                    "no reconoce el par ID+secret. Ocurre ANTES de evaluar scopes "
+                    "o locations, que darian 403, no 401. Asi que el problema es "
+                    "el par:",
+                    "    1. El secret no es el del MISMO credential que el ID. "
+                    "Toast lo muestra una sola vez al crearlo o rotarlo; si se "
+                    "perdio, hay que rotarlo de nuevo y copiar los dos juntos.",
+                    "    2. El credential quedo en estado Locked, o se borro.",
+                    "    3. Se acaba de crear y aun no propaga (unos minutos).",
+                    "  Senal util: al crear o rotar, Toast manda un correo "
+                    "confirmando que el acceso quedo activado. Si no llego, la "
+                    "creacion no se completo.",
                 ]
                 if request_id:
                     detalle.append(f"  requestId para el soporte de Toast: {request_id}")
