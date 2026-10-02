@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
@@ -130,13 +131,37 @@ def previous_closed_pay_period(today: date | None = None) -> tuple:
     return start, end, check
 
 
+def _limpiar_credencial(valor: str) -> str:
+    """Quita lo que se pega de mas al copiar una credencial.
+
+    Un espacio al final o unas comillas que quedaron dentro del valor dan un 401
+    identico al de una credencial equivocada, y en pantalla no se ven. Es la
+    causa mas comun de que falle recien desplegado.
+    """
+    limpio = (valor or "").strip().strip(" ").strip()
+    for comilla in ('"', "'", "“", "”"):
+        if limpio.startswith(comilla) and limpio.endswith(comilla) and len(limpio) > 1:
+            limpio = limpio[1:-1].strip()
+    return limpio
+
+
+def huella(valor: str) -> str:
+    """Identifica una credencial sin revelarla, para poder compararla a ojo."""
+    limpio = _limpiar_credencial(valor)
+    if not limpio:
+        return "(vacio)"
+    if len(limpio) <= 10:
+        return f"{len(limpio)} caracteres"
+    return f"{len(limpio)} caracteres, {limpio[:4]}...{limpio[-4:]}"
+
+
 class ToastClient:
     """Cliente minimo de la Labor API de Toast."""
 
     def __init__(self, client_id: str, client_secret: str, api_host: str = TOAST_API_HOST):
         self.api_host = api_host.rstrip("/")
-        self._client_id = client_id
-        self._client_secret = client_secret
+        self._client_id = _limpiar_credencial(client_id)
+        self._client_secret = _limpiar_credencial(client_secret)
         self._token: str | None = None
 
     @classmethod
@@ -166,8 +191,22 @@ class ToastClient:
         request = urllib.request.Request(
             url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return json.load(response)["token"]["accessToken"]
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)["token"]["accessToken"]
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                detalle = [
+                    f"Toast rechazo las credenciales (HTTP {error.code}).",
+                    f"  TOAST_CLIENT_ID     lei {huella(self._client_id)}",
+                    f"  TOAST_CLIENT_SECRET lei {huella(self._client_secret)}",
+                    "  Compara esas longitudes con las de Toast Web > Integrations"
+                    " > API access.",
+                    "  Si no coinciden, el valor quedo cortado al pegarlo.",
+                    "  Si coinciden, la credencial fue rotada o revocada.",
+                ]
+                raise RuntimeError("\n".join(detalle)) from None
+            raise
 
     def _get(self, path: str, restaurant_guid: str, params: dict | None = None):
         url = f"{self.api_host}{path}"

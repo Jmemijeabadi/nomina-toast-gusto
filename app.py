@@ -213,7 +213,12 @@ with st.sidebar:
             elif not os.path.exists(location["template"]):
                 st.caption(f"falta {location['template']}")
     except Exception as error:
-        st.error(f"No se pudo hablar con Toast: {error}")
+        st.error("No se pudo hablar con Toast")
+        st.code(str(error))
+        st.caption("Las credenciales van en Settings > Secrets de Streamlit, sin "
+                   "comillas ni espacios. La app ya limpia esos dos casos; si "
+                   "sigue fallando, compara las longitudes de arriba con las de "
+                   "Toast Web.")
         st.stop()
 
     st.divider()
