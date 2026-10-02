@@ -222,12 +222,26 @@ class TestReconciliacion(unittest.TestCase):
         cls.client = toast_payroll.ToastClient.from_env()
         cls.locations = toast_payroll.resolve_locations(cls.client)
 
-    def test_toast_reporta_las_dos_empresas_y_las_dos_estan_mapeadas(self):
-        self.assertEqual(len(self.locations), 2)
+    def test_toda_location_que_trabajo_esta_mapeada(self):
+        """Fijar el numero de locations en 2 hacia fallar este test cada vez que
+        abriera una sucursal. Lo que importa no es cuantas hay sino que ninguna
+        con horas se quede fuera de Gusto: una sucursal dada de alta pero sin
+        turnos todavia no le debe dinero a nadie."""
+        inicio, fin, _ = toast_payroll.previous_closed_pay_period()
+        self.assertGreaterEqual(len(self.locations), 2)
         for location in self.locations:
             with self.subTest(location=location["toast_name"]):
-                self.assertTrue(location["configured"],
-                                "location sin empresa de Gusto: sus horas se caerian")
+                turnos = self.client.get_time_entries_by_business_date(
+                    location["guid"], inicio, fin)
+                horas = sum(
+                    toast_payroll.audit_time_entry(t)["payable_hours"]
+                    for t in turnos if not t.get("deleted"))
+                if horas <= 0.005:
+                    continue
+                self.assertTrue(
+                    location["configured"],
+                    f"{location['toast_name']} trabajo {horas:.2f} h y no tiene "
+                    f"empresa de Gusto: esas horas se caerian")
                 self.assertTrue(os.path.exists(location["template"]),
                                 f"falta el template {location['template']}")
 

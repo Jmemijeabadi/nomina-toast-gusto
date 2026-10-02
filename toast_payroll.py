@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -247,8 +248,42 @@ class ToastClient:
             "Content-Type": "application/json",
         }
         request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=180) as response:
-            return json.load(response)
+        return self._abrir_con_reintento(request)
+
+    # Toast limita la tasa de llamadas y responde 429 cuando se pasa. Sin
+    # reintento, una nomina a medio correr se cae y hay que empezar de cero:
+    # para un periodo de 14 dias son cientos de llamadas y basta una. El
+    # reintento respeta Retry-After cuando Toast lo manda, y si no, espera el
+    # doble cada vez. Tambien reintenta los 5xx, que son fallas del lado de
+    # Toast y suelen pasar solas.
+    RATE_LIMIT_INTENTOS = 6
+    RATE_LIMIT_ESPERA_BASE = 2.0
+
+    def _abrir_con_reintento(self, request, timeout: int = 180):
+        for intento in range(self.RATE_LIMIT_INTENTOS):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return json.load(response)
+            except urllib.error.HTTPError as error:
+                ultimo = intento == self.RATE_LIMIT_INTENTOS - 1
+                if error.code != 429 and error.code < 500:
+                    raise
+                if ultimo:
+                    raise RuntimeError(
+                        f"Toast sigue respondiendo {error.code} despues de "
+                        f"{self.RATE_LIMIT_INTENTOS} intentos en {request.full_url}. "
+                        f"Si es 429, hay demasiadas llamadas al mismo tiempo; "
+                        f"vuelve a correr en unos minutos."
+                    ) from None
+                espera = self.RATE_LIMIT_ESPERA_BASE * (2 ** intento)
+                indicado = error.headers.get("Retry-After") if error.headers else None
+                if indicado:
+                    try:
+                        espera = max(espera, float(indicado))
+                    except ValueError:
+                        pass
+                time.sleep(espera)
+        raise AssertionError("inalcanzable")
 
     def get_restaurants(self) -> list:
         """Restaurantes donde esta habilitada esta integracion.
@@ -259,8 +294,7 @@ class ToastClient:
         url = f"{self.api_host}/partners/v1/restaurants"
         headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"}
         request = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(request, timeout=60) as response:
-            return json.load(response)
+        return self._abrir_con_reintento(request, timeout=60)
 
     def get_employees(self, restaurant_guid: str) -> list:
         return self._get("/labor/v1/employees", restaurant_guid)

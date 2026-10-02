@@ -14,9 +14,23 @@ si expone todo lo que hace falta para calcularla:
 
 El mesero viene en `order.server`, NO en `check.server`, que llega vacio.
 
-NADA de esto se usa para pagar hasta que el reparto calculado cuadre al centavo
-contra el reporte EmployeeTipTotals en varios periodos. Ese reporte es la
-respuesta correcta conocida; este modulo es la hipotesis.
+ESTADO MEDIDO (2026-10-02), Gaslamp, dos periodos de 14 dias:
+
+  bruto de las ordenes contra "antes del pool"   $0.00 y $1.00 de diferencia
+  reparto contra "despues del pool"              $11.40 y $18.33 por periodo,
+                                                 hasta $1.80 en una persona
+
+El bruto cuadra. El reparto no: queda un residuo chico pero real. $1.80 en los
+tips de alguien es un cheque equivocado, asi que este modulo NO se usa para
+pagar. El reporte EmployeeTipTotals sigue siendo la fuente de verdad y hay que
+seguir subiendolo; esto sirve para contrastarlo y sacar avisos.
+
+National City esta SIN VALIDAR. Su pool se calcula sobre ventas (5.5%), no
+sobre tips, que es un mecanismo distinto, y su bruto todavia sale corto unos
+$75 por periodo. No se le puede atribuir la precision que se midio en Gaslamp.
+
+Lo que falta para cerrarlo: el residuo por persona en Gaslamp, el hueco de $75
+del bruto en NC, y validar NC contra su reporte igual que se hizo aca.
 """
 
 from __future__ import annotations
@@ -38,6 +52,24 @@ SALES_CATEGORIES = {
     "f75d9ef4-0766-42e2-bdb5-5fbe5e5e5d1d": "Wine",
 }
 
+# Que hace Toast con la parte de un job receptor que no tuvo a nadie fichado.
+# No se puede leer de la politica ni de la API: se midio contra el reporte
+# EmployeeTipTotals, que es lo que de verdad se les pago. Se probaron las 4
+# combinaciones en dos periodos, eligiendo la regla en uno y midiendola en el
+# otro para no sobreajustar:
+#
+#   Online Ordering Pool 1 = retener, Pool 1 = repartir   $11.40 y $18.33
+#   los dos repartir                                      $44.93 y $71.47
+#   Pool 1 = retener                                      $1,697 y $2,113
+#
+# La combinacion ganadora esta separada de las otras por dos ordenes de
+# magnitud, y da el mismo error en el periodo que no se uso para elegirla.
+# Aun asi NO cuadra al centavo: quedan $11-18 por periodo, hasta $1.80 en una
+# persona. No es redondeo (probado a 2 y 4 decimales, identico). Mientras ese
+# residuo exista, esto no sirve para pagar: el reporte sigue siendo la fuente.
+REGLA_NO_ASIGNABLE = ("repartir", "retener")
+
+
 # Politicas leidas de Toast Web > Tips Manager. Los jobs son los de TOAST.
 POLITICAS = {
     "National City": {
@@ -45,6 +77,7 @@ POLITICAS = {
         "pools": [
             {
                 "nombre": "Pool 1",
+                "no_asignable": "repartir",    # SIN VALIDAR: NC nunca se midio
                 "aportan": {"Server": 0.055},      # 5.5% de las ventas en las 7 categorias
                 "base": "ventas",
                 "reciben": {
@@ -59,6 +92,7 @@ POLITICAS = {
         "pools": [
             {
                 "nombre": "Online Ordering Pool 1",
+                "no_asignable": "retener",     # medido, ver REGLA_NO_ASIGNABLE
                 "aportan": {"Online Ordering": 1.00},
                 "base": "tips",
                 "reciben": {
@@ -68,6 +102,7 @@ POLITICAS = {
             },
             {
                 "nombre": "Pool 1",
+                "no_asignable": "repartir",    # medido, ver REGLA_NO_ASIGNABLE
                 "aportan": {j: 1.00 for j in (
                     "Busser", "Prep", "Taquero", "Salaried", "Tortilla station",
                     "Cashier", "Dishwasher", "Lead", "Encargado")},
@@ -118,9 +153,17 @@ def extract_day(orders: list) -> dict:
         for check in (order.get("checks") or []):
             if check.get("deleted"):
                 continue
+            # Solo los pagos que quedaron CAPTURED: un VOIDED o DENIED trae su
+            # tipAmount en el JSON pero nadie lo cobro, y sumarlo infla el pool.
             propina = sum(float(p.get("tipAmount") or 0)
                           for p in (check.get("payments") or [])
-                          if not p.get("deleted"))
+                          if not p.get("deleted")
+                          and p.get("paymentStatus") == "CAPTURED")
+            # La propina automatica no es un tipAmount: viene como service charge
+            # marcado gratuity=true. Sin esto el bruto queda corto.
+            propina += sum(float(sc.get("chargeAmount") or 0)
+                           for sc in (check.get("appliedServiceCharges") or [])
+                           if sc.get("gratuity") and not sc.get("deleted"))
             if server:
                 tips[server] += propina
             else:
@@ -155,6 +198,65 @@ def jobs_del_dia(time_entries: list, jobs: dict) -> dict:
         if horas > 0:
             salida[titulo][guid] += horas
     return {k: dict(v) for k, v in salida.items()}
+
+
+# El nombre de la cuenta de sistema por la que entran los pedidos en linea. En
+# Toast no es un empleado con job: no tiene jobReferences y nunca ficha, pero en
+# Tips Manager si aparece como contribuyente de su propio pool. Hay que
+# reconocerla por nombre porque no hay otro dato que la distinga.
+ONLINE_ORDERING_JOB = "Online Ordering"
+
+
+def job_de_cada_quien(jobs_hoy: dict, empleados: dict, jobs: dict,
+                      politica: dict) -> tuple:
+    """Decide el job de cada persona para efectos del pool.
+
+    Sacarlo solo de los turnos pierde a quien cobro cheques sin fichar, que es
+    normal en un encargado: aporta al pool, no recibe nada, y si no aporta todos
+    los demas quedan cortos. Por eso el orden es:
+
+      1. el job donde hizo mas horas ese dia, si ficho
+      2. si no ficho, el job de su expediente cuando no hay ambiguedad
+      3. la cuenta de pedidos en linea, que se reconoce por nombre
+
+    Devuelve (job_de, sin_resolver). Lo que cae en sin_resolver NO aporta, asi
+    que se reporta en vez de quedarse callado.
+    """
+    job_de = {}
+    horas_por = collections.defaultdict(lambda: collections.defaultdict(float))
+    for titulo, personas in jobs_hoy.items():
+        for persona, horas in personas.items():
+            horas_por[persona][titulo] += horas
+    for persona, titulos in horas_por.items():
+        job_de[persona] = max(titulos.items(), key=lambda kv: kv[1])[0]
+
+    aportan = set()
+    for pool in politica["pools"]:
+        aportan.update(pool["aportan"])
+
+    sin_resolver = {}
+    for guid, empleado in empleados.items():
+        if guid in job_de:
+            continue
+        nombre = (f"{empleado.get('firstName') or ''} "
+                  f"{empleado.get('lastName') or ''}").strip().lower()
+        if "online ordering" in nombre:
+            job_de[guid] = ONLINE_ORDERING_JOB
+            continue
+        titulos = [jobs.get((ref or {}).get("guid"))
+                   for ref in (empleado.get("jobReferences") or [])]
+        titulos = [t for t in titulos if t]
+        candidatos = [t for t in titulos if t in aportan]
+        if len(candidatos) == 1:
+            job_de[guid] = candidatos[0]
+        elif len(titulos) == 1:
+            job_de[guid] = titulos[0]
+        elif titulos:
+            # Varios jobs y ninguno desempata: no se puede adivinar de cual
+            # aportaria. Se deja fuera y se dice.
+            sin_resolver[guid] = titulos
+
+    return job_de, sin_resolver
 
 
 def repartir_dia(politica: dict, tips: dict, ventas: dict,
@@ -194,13 +296,22 @@ def repartir_dia(politica: dict, tips: dict, ventas: dict,
         if pct_asignable <= 0:
             continue
 
+        # Que pasa con la parte de un job receptor que no tuvo a nadie fichado.
+        # No es la misma regla en los dos pools de Gaslamp, y no se puede
+        # deducir de la politica: se midio contra el reporte, que es la
+        # respuesta conocida. Ver REGLA_NO_ASIGNABLE arriba.
+        #   "repartir"  se reasigna entre los jobs presentes, renormalizando
+        #   "retener"   se queda con quien aporto
+        retiene = pool.get("no_asignable") == "retener"
+        factor = pct_asignable if retiene else 1.0
+
         for guid, aporte in aportes.items():
-            resultado[guid] -= aporte
+            resultado[guid] -= aporte * factor
 
         for job, horas_por_persona in presentes.items():
-            # La parte no asignable se queda con los contribuyentes: se reparte
-            # solo el porcentaje que si tiene destino, renormalizado.
-            parte = total * (pool["reciben"][job] / pct_asignable) if pct_asignable else 0.0
+            parte = total * pool["reciben"][job]
+            if not retiene:
+                parte /= pct_asignable
             horas_totales = sum(horas_por_persona.values())
             if horas_totales <= 0:
                 continue

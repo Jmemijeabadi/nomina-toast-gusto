@@ -228,9 +228,26 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     audited = []
     for location in locations:
         if not location["configured"]:
-            revisar.append(
-                f"Location sin empresa de Gusto: {location['toast_name']}. Sus "
-                f"horas no entran a ningun CSV; agregala a GUSTO_COMPANIES.")
+            # Una location que Toast reporta y Gusto no conoce. Puede ser una
+            # sucursal nueva que todavia no abre (cero turnos, solo se avisa) o
+            # una que ya opera y cuyas horas se estarian perdiendo. Se mide para
+            # no gritar igual en los dos casos.
+            huerfanas = client.get_time_entries_by_business_date(
+                location["guid"], start, end_inclusive)
+            horas = sum(
+                audit_time_entry(entry)["payable_hours"]
+                for entry in huerfanas if not entry.get("deleted"))
+            if horas > 0.005:
+                revisar.append(
+                    f"{location['toast_name']} no tiene empresa de Gusto y "
+                    f"trabajo {horas:.2f} h en este periodo. Esas horas no "
+                    f"entran a ningun CSV. Agregala a GUSTO_COMPANIES con su "
+                    f"template, o se quedan sin pagar.")
+            else:
+                warnings.append(
+                    f"{location['toast_name']} existe en Toast sin empresa de "
+                    f"Gusto, pero no tuvo turnos en este periodo. Hay que "
+                    f"mapearla antes de que empiece a operar.")
             continue
         entries = client.get_time_entries_by_business_date(
             location["guid"], start - timedelta(days=7), end_inclusive)
