@@ -302,7 +302,15 @@ def repartir_dia(politica: dict, tips: dict, ventas: dict,
         # respuesta conocida. Ver REGLA_NO_ASIGNABLE arriba.
         #   "repartir"  se reasigna entre los jobs presentes, renormalizando
         #   "retener"   se queda con quien aporto
-        retiene = pool.get("no_asignable") == "retener"
+        regla = pool.get("no_asignable")
+        if regla not in REGLA_NO_ASIGNABLE:
+            # Sin esto, un typo o una llave ausente caia en silencio a
+            # "repartir" y movia dinero entre personas sin que nadie se enterara.
+            raise RuntimeError(
+                f"El pool '{pool.get('nombre')}' tiene no_asignable={regla!r}, "
+                f"que no es ninguno de {REGLA_NO_ASIGNABLE}. Esa regla decide a "
+                f"quien le toca la parte de un job ausente: no se adivina.")
+        retiene = regla == "retener"
         factor = pct_asignable if retiene else 1.0
 
         for guid, aporte in aportes.items():
@@ -331,9 +339,14 @@ def repartir_periodo(client, location: dict, inicio: date, fin: date,
     if not politica:
         raise RuntimeError(f"sin politica de tip pool para {location['short']}")
 
+    # El expediente de cada empleado hace falta para resolver el job de quien
+    # cobro cheques sin fichar, y de la cuenta de pedidos en linea. Se trae una
+    # vez por periodo, no por dia.
+    empleados = {e["guid"]: e for e in client.get_employees(location["guid"])}
+
     acumulado = collections.defaultdict(float)
     diag = {"tips_brutos": 0.0, "sin_categoria": 0.0, "tips_sin_mesero": 0.0,
-            "dias": 0}
+            "dias": 0, "job_ambiguo": {}}
 
     dia = inicio
     while dia <= fin:
@@ -346,14 +359,17 @@ def repartir_periodo(client, location: dict, inicio: date, fin: date,
                                "includeMissedBreaks": "true"})
         jobs_hoy = jobs_del_dia(entries, jobs)
 
-        # El job con el que cada persona ficho ese dia. Si ficho en varios, el
-        # de mas horas, que es con el que aporta al pool.
-        mejor = {}
-        for job, personas in jobs_hoy.items():
-            for persona, horas in personas.items():
-                if persona not in mejor or horas > mejor[persona][1]:
-                    mejor[persona] = (job, horas)
-        job_de = {persona: job for persona, (job, _) in mejor.items()}
+        # El job de cada quien para efectos del pool. Resolverlo solo con los
+        # turnos pierde a quien cobra cheques sin fichar y a la cuenta de
+        # pedidos en linea, y entonces esos tips nunca entran al pool y todos
+        # los demas quedan cortos. Ver job_de_cada_quien.
+        job_de, sin_resolver = job_de_cada_quien(
+            jobs_hoy, empleados, jobs, politica)
+        for guid, titulos in sin_resolver.items():
+            if datos["tips"].get(guid):
+                # Tiene tips y no se pudo decidir de que job aporta: se dice,
+                # no se come en silencio.
+                diag["job_ambiguo"][guid] = titulos
 
         reparto = repartir_dia(politica, datos["tips"], datos["ventas"],
                                jobs_hoy, job_de)

@@ -19,9 +19,12 @@ from __future__ import annotations
 import csv
 import os
 import unittest
+import urllib.error
+import urllib.request
 from datetime import date
 
 import ca_overtime
+import gusto_export
 import toast_payroll
 from ca_overtime import compute_overtime, workweek_start
 from toast_payroll import pay_period_containing
@@ -229,6 +232,7 @@ class TestReconciliacion(unittest.TestCase):
         turnos todavia no le debe dinero a nadie."""
         inicio, fin, _ = toast_payroll.previous_closed_pay_period()
         self.assertGreaterEqual(len(self.locations), 2)
+        medidas = 0
         for location in self.locations:
             with self.subTest(location=location["toast_name"]):
                 turnos = self.client.get_time_entries_by_business_date(
@@ -238,6 +242,7 @@ class TestReconciliacion(unittest.TestCase):
                     for t in turnos if not t.get("deleted"))
                 if horas <= 0.005:
                     continue
+                medidas += 1
                 self.assertTrue(
                     location["configured"],
                     f"{location['toast_name']} trabajo {horas:.2f} h y no tiene "
@@ -245,10 +250,21 @@ class TestReconciliacion(unittest.TestCase):
                 self.assertTrue(os.path.exists(location["template"]),
                                 f"falta el template {location['template']}")
 
+        # Sin esto el test pasaba vacio: si ninguna location reporta horas, todo
+        # el ciclo hace continue y no se afirma nada. Un periodo cerrado del
+        # negocio operando SIEMPRE tiene horas en algun lado.
+        self.assertGreater(medidas, 0,
+                           f"ninguna location reporto horas en {inicio} a {fin}: "
+                           f"el test no probo nada, revisa credenciales o periodo")
+
     def test_las_horas_de_un_periodo_cerrado_cuadran_con_el_csv(self):
         inicio, fin, _ = toast_payroll.previous_closed_pay_period()
+        # Solo las locations con empresa de Gusto, y las MISMAS en los dos lados
+        # de la igualdad. Mezclarlas comparaba poblaciones distintas: una
+        # sucursal sin mapear sumaba horas en Toast y no tenia CSV donde salir.
+        mapeadas = [l for l in self.locations if l["configured"]]
         total_toast = 0.0
-        for location in self.locations:
+        for location in mapeadas:
             empleados = {e["guid"]: e for e in self.client.get_employees(location["guid"])}
             for turno in self.client.get_time_entries_by_business_date(
                     location["guid"], inicio, fin):
@@ -266,9 +282,12 @@ class TestReconciliacion(unittest.TestCase):
         marca = f"{inicio:%Y%m%d}_{fin:%Y%m%d}"
         total_csv = 0.0
         encontrados = 0
-        for location in self.locations:
-            slug = ("bonita" if location["short"] == "National City" else "gaslamp")
-            ruta = os.path.join(CSV_DIR, f"gusto_import_{slug}_{marca}.csv")
+        for location in mapeadas:
+            # Derivado de la empresa, no de un else: con tres locations el else
+            # mandaba la tercera al CSV de gaslamp y lo contaba dos veces.
+            ruta = os.path.join(
+                CSV_DIR,
+                f"gusto_import_{gusto_export.slug(location['company'])}_{marca}.csv")
             if not os.path.exists(ruta):
                 continue
             encontrados += 1
@@ -277,7 +296,7 @@ class TestReconciliacion(unittest.TestCase):
                     total_csv += sum(float(fila[c] or 0) for c in
                                      ("regular_hours", "overtime_hours",
                                       "double_overtime_hours"))
-        if encontrados < 2:
+        if encontrados < len(mapeadas):
             self.skipTest(f"faltan CSV del periodo {marca}; corre gusto_export.py")
 
         retenidas = 0.0
@@ -345,6 +364,112 @@ class TestReporteDeTips(unittest.TestCase):
 
 
 CSV_DIR = os.environ.get("PAYROLL_CSV_DIR", ".")
+
+
+class TestReintento(unittest.TestCase):
+    """El reintento ante 429 tiene que reintentar de verdad.
+
+    Se agrego sin test y no servia: `import time` quedaba pisado por el `time`
+    de datetime, asi que `time.sleep` lanzaba AttributeError y la corrida moria
+    en el PRIMER 429, mas opaca que antes del cambio. Una nomina de 14 dias son
+    cientos de llamadas; un 429 es cuestion de tiempo.
+    """
+
+    def setUp(self):
+        self.client = toast_payroll.ToastClient("x" * 32, "y" * 64)
+        self.esperas = []
+        self._sleep_real = toast_payroll.sleep
+        toast_payroll.sleep = self.esperas.append
+        self._urlopen_real = toast_payroll.urllib.request.urlopen
+
+    def tearDown(self):
+        toast_payroll.sleep = self._sleep_real
+        toast_payroll.urllib.request.urlopen = self._urlopen_real
+
+    def _falsear(self, respuestas):
+        """respuestas: lista de codigos HTTP, o None para una respuesta buena."""
+        self.llamadas = []
+
+        class Buena:
+            def read(self_inner):
+                return b'{"ok": true}'
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+
+        def falso(request, timeout=None):
+            codigo = respuestas[len(self.llamadas)] if len(self.llamadas) < len(respuestas) else None
+            self.llamadas.append(request.full_url)
+            if codigo is None:
+                return Buena()
+            raise urllib.error.HTTPError(
+                request.full_url, codigo, "forzado", {}, None)
+
+        toast_payroll.urllib.request.urlopen = falso
+
+    def test_un_429_se_reintenta_y_la_segunda_pasa(self):
+        self._falsear([429])
+        request = urllib.request.Request("https://ejemplo/x")
+        self.assertEqual(self.client._abrir_con_reintento(request), {"ok": True})
+        self.assertEqual(len(self.llamadas), 2, "no reintento despues del 429")
+        self.assertEqual(self.esperas, [2.0], "no esperó antes de reintentar")
+
+    def test_un_500_tambien_se_reintenta(self):
+        self._falsear([503])
+        request = urllib.request.Request("https://ejemplo/x")
+        self.assertEqual(self.client._abrir_con_reintento(request), {"ok": True})
+        self.assertEqual(len(self.llamadas), 2)
+
+    def test_un_404_no_se_reintenta(self):
+        self._falsear([404])
+        request = urllib.request.Request("https://ejemplo/x")
+        with self.assertRaises(urllib.error.HTTPError):
+            self.client._abrir_con_reintento(request)
+        self.assertEqual(len(self.llamadas), 1, "reintento algo que no debia")
+
+    def test_la_espera_se_duplica_y_al_final_explica(self):
+        intentos = toast_payroll.ToastClient.RATE_LIMIT_INTENTOS
+        self._falsear([429] * intentos)
+        request = urllib.request.Request("https://ejemplo/x")
+        with self.assertRaises(RuntimeError) as ctx:
+            self.client._abrir_con_reintento(request)
+        self.assertIn("429", str(ctx.exception))
+        self.assertEqual(len(self.llamadas), intentos)
+        cliente = toast_payroll.ToastClient
+        esperado = [min(cliente.RATE_LIMIT_ESPERA_BASE * (2 ** i),
+                        cliente.RATE_LIMIT_ESPERA_MAXIMA)
+                    for i in range(intentos - 1)]
+        self.assertEqual(self.esperas, esperado)
+        self.assertLessEqual(max(self.esperas), cliente.RATE_LIMIT_ESPERA_MAXIMA,
+                             "una espera se paso del tope: congela la app")
+
+    def test_un_retry_after_absurdo_se_topa(self):
+        """Un encabezado del servidor no debe decidir cuanto se congela la app."""
+        llamadas = []
+
+        class Buena:
+            def read(self_inner):
+                return b'{"ok": true}'
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+
+        def falso(request, timeout=None):
+            llamadas.append(1)
+            if len(llamadas) == 1:
+                raise urllib.error.HTTPError(
+                    request.full_url, 429, "espera una hora",
+                    {"Retry-After": "3600"}, None)
+            return Buena()
+
+        toast_payroll.urllib.request.urlopen = falso
+        request = urllib.request.Request("https://ejemplo/x")
+        self.client._abrir_con_reintento(request)
+        self.assertEqual(
+            self.esperas, [toast_payroll.ToastClient.RATE_LIMIT_ESPERA_MAXIMA],
+            "se respeto un Retry-After de una hora en vez de topalo")
 
 
 if __name__ == "__main__":

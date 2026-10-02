@@ -12,12 +12,14 @@ from __future__ import annotations
 import csv
 import json
 import os
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+# Se importa solo sleep: 'import time' quedaria pisado por el time de
+# datetime que se usa abajo para time.min, y time.sleep lanzaria AttributeError.
+from time import sleep
 from zoneinfo import ZoneInfo
 
 TOAST_API_HOST = "https://ws-api.toasttab.com"
@@ -258,6 +260,10 @@ class ToastClient:
     # Toast y suelen pasar solas.
     RATE_LIMIT_INTENTOS = 6
     RATE_LIMIT_ESPERA_BASE = 2.0
+    # Tope por espera. Sin el, un Retry-After que manda el servidor decide
+    # cuanto se congela la app: alguien esta esperando frente a la pantalla el
+    # viernes de pago. Con 6 intentos el peor caso son 5 esperas.
+    RATE_LIMIT_ESPERA_MAXIMA = 30.0
 
     def _abrir_con_reintento(self, request, timeout: int = 180):
         for intento in range(self.RATE_LIMIT_INTENTOS):
@@ -276,13 +282,19 @@ class ToastClient:
                         f"vuelve a correr en unos minutos."
                     ) from None
                 espera = self.RATE_LIMIT_ESPERA_BASE * (2 ** intento)
-                indicado = error.headers.get("Retry-After") if error.headers else None
+                # `if error.headers` seria truthiness sobre el objeto de encabezados:
+                # uno vacio es falsy y se saltaria la indicacion de Toast.
+                encabezados = getattr(error, "headers", None)
+                indicado = (encabezados.get("Retry-After")
+                            if encabezados is not None else None)
                 if indicado:
                     try:
+                        # Retry-After tambien puede venir como fecha HTTP; en ese
+                        # caso float() falla y se queda el backoff exponencial.
                         espera = max(espera, float(indicado))
                     except ValueError:
                         pass
-                time.sleep(espera)
+                sleep(min(espera, self.RATE_LIMIT_ESPERA_MAXIMA))
         raise AssertionError("inalcanzable")
 
     def get_restaurants(self) -> list:

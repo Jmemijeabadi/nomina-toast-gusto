@@ -232,17 +232,34 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             # sucursal nueva que todavia no abre (cero turnos, solo se avisa) o
             # una que ya opera y cuyas horas se estarian perdiendo. Se mide para
             # no gritar igual en los dos casos.
-            huerfanas = client.get_time_entries_by_business_date(
-                location["guid"], start, end_inclusive)
-            horas = sum(
-                audit_time_entry(entry)["payable_hours"]
-                for entry in huerfanas if not entry.get("deleted"))
-            if horas > 0.005:
+            # Aislado a proposito. Antes de medir las horas, este GUID no se
+            # consultaba nunca; si la consulta falla (permisos del credential,
+            # una location a medio dar de alta, cualquier 4xx) NO puede tirar la
+            # nomina de las empresas que si estan bien. Se degrada a aviso.
+            try:
+                huerfanas = client.get_time_entries_by_business_date(
+                    location["guid"], start, end_inclusive)
+                vivos = [e for e in huerfanas if not e.get("deleted")]
+                horas = sum(audit_time_entry(e)["payable_hours"] for e in vivos)
+            except Exception as error:
                 revisar.append(
                     f"{location['toast_name']} no tiene empresa de Gusto y "
-                    f"trabajo {horas:.2f} h en este periodo. Esas horas no "
-                    f"entran a ningun CSV. Agregala a GUSTO_COMPANIES con su "
-                    f"template, o se quedan sin pagar.")
+                    f"tampoco se pudieron leer sus turnos ({type(error).__name__}), "
+                    f"asi que no se sabe si tiene horas sin pagar. Revisala a mano "
+                    f"o agregala a GUSTO_COMPANIES.")
+                continue
+            # El disparador es que HAYA turnos, no que sumen horas. Un turno
+            # abierto trae regularHours en 0 porque Toast aun no lo calcula, asi
+            # que medir solo las horas clasificaba como "no opera" a una
+            # sucursal con gente fichada en ese momento.
+            if vivos:
+                revisar.append(
+                    f"{location['toast_name']} no tiene empresa de Gusto y "
+                    f"tiene {len(vivos)} turno(s) en este periodo, "
+                    f"{horas:.2f} h pagables. Esas horas no entran a ningun "
+                    f"CSV, y tampoco cuentan para el overtime semanal de quien "
+                    f"ademas trabaje en otra sucursal. Agregala a "
+                    f"GUSTO_COMPANIES con su template, o se quedan sin pagar.")
             else:
                 warnings.append(
                     f"{location['toast_name']} existe en Toast sin empresa de "

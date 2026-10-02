@@ -2,7 +2,8 @@
 
     streamlit run app.py
 
-Tres pasos: elegir el periodo, subir los dos reportes de tips, generar los CSV.
+Tres pasos: elegir el periodo, subir un reporte de tips por sucursal con empresa
+de Gusto, generar los CSV.
 
 La herramienta MUESTRA lo que hay que revisar y deja que decida quien opera: el
 objetivo es llegar al resultado que se hacia a mano, no ser mas estricto que eso.
@@ -277,14 +278,22 @@ if fin >= date.today():
 
 # ───────────────────────────── paso 2: tips ─────────────────────────────
 
-st.subheader("2. Subi los dos reportes de tips")
+# Solo las locations con empresa de Gusto piden reporte de tips. Una sucursal
+# que Toast reporta y Gusto no conoce no tiene company a la que atribuirlos, y
+# contarla aqui dejaba el boton Generar deshabilitado PARA SIEMPRE: su company
+# es "", nunca entra a `subidos`, asi que `faltantes` nunca se vaciaba. Ademas
+# st.columns(2) con zip truncaba la lista, asi que con tres locations una real
+# se quedaba sin casilla. Paso al aparecer Tacos El Franc - Fresno.
+con_empresa = [l for l in locations if l["configured"]]
+
+st.subheader(f"2. Subi los {len(con_empresa)} reportes de tips")
 st.caption("En Toast Web: **Reports → Labor → Tip management**, vista **By Day**, "
            f"con el rango **{inicio:%Y-%m-%d}** a **{fin:%Y-%m-%d}**, y descargalo. "
            "Uno por location.")
 
 subidos = {}
-columnas = st.columns(2)
-for columna, location in zip(columnas, locations):
+columnas = st.columns(len(con_empresa)) if con_empresa else []
+for columna, location in zip(columnas, con_empresa):
     with columna:
         st.markdown(f"**{location['short']}**")
         archivo = st.file_uploader("Reporte EmployeeTipTotals", type=["csv"],
@@ -302,7 +311,7 @@ for columna, location in zip(columnas, locations):
                 subidos[location["company"]] = archivo
                 st.success(f"{archivo.name}")
 
-faltantes = [l["short"] for l in locations if l["company"] not in subidos]
+faltantes = [l["short"] for l in con_empresa if l["company"] not in subidos]
 if faltantes:
     st.info(f"Falta el reporte de: {', '.join(faltantes)}. Sin el, las columnas de "
             f"tips saldrian vacias.")

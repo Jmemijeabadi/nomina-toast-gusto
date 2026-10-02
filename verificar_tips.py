@@ -6,11 +6,13 @@ Toast NO expone la distribucion del pool (8 endpoints probados, todos 404) ni
 hay campos de tips en la Analytics API. Pero la Orders API si esta abierta y
 tiene los insumos. Esto mide, en dos pasos:
 
-  Paso 1  El BRUTO. Los tips que las ordenes reportan deben cuadrar con el
-          "antes del pool" del reporte. Si no cuadran, no tiene sentido seguir.
-  Paso 2  El REPARTO. Aplicar la politica del pool y comparar persona por
-          persona contra el "despues del pool", que es la respuesta correcta
-          conocida.
+Este archivo mide SOLO el bruto: los tips que las ordenes reportan contra el
+"antes del pool" del reporte. Si el bruto no cuadra, el reparto no se puede
+reconstruir y no tiene sentido seguir.
+
+El segundo paso, comparar el reparto calculado persona por persona contra el
+"despues del pool", NO esta aqui: se corre con tip_pool.repartir_periodo contra
+el reporte. Su resultado medido esta en el encabezado de tip_pool.py.
 
 Uso:
     python verificar_tips.py
