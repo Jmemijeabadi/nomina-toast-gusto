@@ -1,0 +1,26 @@
+.streamlit/secrets.toml
+secrets.toml
+.env
+__pycache__/
+*.pyc
+
+# Datos de nomina: nombres, emails y sueldos reales. Nunca al repo.
+staging_*.csv
+exceptions_*.csv
+gusto_import_*.csv
+
+# Archivos de referencia de Tany: nombres y sueldos reales.
+reference/
+
+# Los mapeos y los templates traen nombres, emails, telefonos y gusto_employee_id
+# de 76 personas. La app los necesita, pero no van a un repo.
+employee_map.csv
+job_map.csv
+gusto_template_*.csv
+
+# Los CSV de nomina ya generados
+salida/
+retenidos_*.csv
+
+# Documento operativo: nombres y montos reales de la nomina.
+PRUEBA_DE_SUBIDA.md

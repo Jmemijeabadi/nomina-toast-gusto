@@ -1,0 +1,4 @@
+toast_guid,toast_location,toast_name,toast_email,toast_phone,person_key,persona_confirmada,gusto_employee_id,gusto_name,confianza,accion,nota
+00000000-0000-0000-0000-000000000001,Location A,"Olmedas Quintero, Ana",ana@ejemplo.com,6190000001,ana@ejemplo.com,,a1b2c3,"Olmedas Quintero, Ana",exacto,,
+00000000-0000-0000-0000-000000000002,Location B,"Vega Montero, Luis",luis@ejemplo.com,6190000002,luis@ejemplo.com,si,d4e5f6,"Vega Montero, Luis",seguro,,"trabaja en las dos empresas: persona_confirmada=si suma sus horas para el overtime"
+00000000-0000-0000-0000-000000000003,Location A,"Verano, Elias",,6190000003,00000000-0000-0000-0000-000000000003,,,,ninguno,CONFIRMAR,sin candidato en el template de Gusto
