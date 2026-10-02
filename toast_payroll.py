@@ -196,15 +196,36 @@ class ToastClient:
                 return json.load(response)["token"]["accessToken"]
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
+                # Toast explica el rechazo en el cuerpo y manda un requestId que
+                # su soporte puede rastrear. Tirarlo deja al operador adivinando.
+                motivo, request_id = "", ""
+                try:
+                    cuerpo = json.loads(error.read().decode())
+                    motivo = (cuerpo.get("error_description")
+                              or cuerpo.get("message") or "")
+                    request_id = cuerpo.get("requestId") or ""
+                except Exception:
+                    pass
+
                 detalle = [
                     f"Toast rechazo las credenciales (HTTP {error.code}).",
-                    f"  TOAST_CLIENT_ID     lei {huella(self._client_id)}",
-                    f"  TOAST_CLIENT_SECRET lei {huella(self._client_secret)}",
-                    "  Compara esas longitudes con las de Toast Web > Integrations"
-                    " > API access.",
-                    "  Si no coinciden, el valor quedo cortado al pegarlo.",
-                    "  Si coinciden, la credencial fue rotada o revocada.",
+                    f"  TOAST_CLIENT_ID     lei {huella(self._client_id)}  "
+                    f"(deberia ser 32 caracteres)",
+                    f"  TOAST_CLIENT_SECRET lei {huella(self._client_secret)}  "
+                    f"(deberia ser 64 caracteres)",
                 ]
+                if motivo:
+                    detalle.append(f"  Toast dice: {motivo}")
+                detalle += [
+                    "  Si las longitudes son 32 y 64, el valor no se corto al "
+                    "pegarlo: Toast esta rechazando el par en si.",
+                    "  Revisa, en orden: que el ID y el secret sean del MISMO "
+                    "credential (no uno viejo con uno nuevo); que el credential "
+                    "sea de tipo machine client; y que la integracion este "
+                    "habilitada para los restaurantes.",
+                ]
+                if request_id:
+                    detalle.append(f"  requestId para el soporte de Toast: {request_id}")
                 raise RuntimeError("\n".join(detalle)) from None
             raise
 
