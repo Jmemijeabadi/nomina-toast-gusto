@@ -77,6 +77,12 @@ GUSTO_COLUMNS = [
 # cajon. Eso respalda que los de tarjeta van en el cheque. Si Toast Web dice
 # "Pay out from the cash drawer" en Employees > Shift review > Payout options,
 # cambiar esto a "cash_tips".
+# Tolerancia del cierre de cuentas. Arriba de esto, el descuadre no se puede
+# achacar a redondeo y bloquea: un CSV incompleto que parece completo es
+# peor que no tener CSV.
+TOLERANCIA_HORAS = 0.05
+TOLERANCIA_TIPS = 0.50
+
 NON_CASH_TIPS_COLUMN = "paycheck_tips"
 
 # La prima de meal nunca se escribe como monto: ver el docstring.
@@ -752,7 +758,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"corresponden; en California los tips son propiedad de los empleados.")
 
     gap = tips_reported_total - placed - sum(tips_held.values()) - sum(tips_no_persona.values())
-    if abs(gap) > 0.50:
+    if abs(gap) > TOLERANCIA_TIPS:
         problems.append(
             f"Cierre de tips: el reporte trae ${tips_reported_total:,.2f}, se "
             f"ubicaron ${placed:,.2f} y ${sum(tips_held.values()):,.2f} quedaron "
@@ -782,7 +788,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
 
     hours_held = sum(h["horas"] for h in held_back)
     hueco_horas = hours_reported - hours_placed - hours_held
-    if abs(hueco_horas) > 0.05:
+    if abs(hueco_horas) > TOLERANCIA_HORAS:
         problems.append(
             f"Cierre de HORAS: entraron {hours_reported:.2f} h, salieron "
             f"{hours_placed:.2f} h al CSV y {hours_held:.2f} h a retenidos. "
@@ -843,7 +849,7 @@ def main() -> int:
     if result.get("revisar"):
         print()
         print(f"  {len(result['revisar'])} cosa(s) PARA REVISAR. No impiden generar el")
-        print(f"  CSV, pero conviene mirarlas antes de subirlo:")
+        print("  CSV, pero conviene mirarlas antes de subirlo:")
         for item in result["revisar"]:
             print(f"    - {item}")
 

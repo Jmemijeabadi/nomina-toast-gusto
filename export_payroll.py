@@ -23,7 +23,7 @@ import argparse
 import os
 import sys
 from collections import Counter
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 
 from toast_payroll import ToastClient, aggregate_for_pay_period, write_csv
 

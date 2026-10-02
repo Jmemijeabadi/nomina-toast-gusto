@@ -28,8 +28,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from toast_payroll import (TOAST_TIMEZONE, ToastClient, data_path,
-                           resolve_locations)
+from toast_payroll import TOAST_TIMEZONE, ToastClient, resolve_locations
 
 # Cada location de Toast es una EMPRESA distinta en Gusto, con su propio template
 # y su propia nomina ("bonita" = Plaza Bonita = National City). El mapeo vive en

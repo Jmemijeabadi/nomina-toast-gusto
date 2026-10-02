@@ -32,8 +32,8 @@ import streamlit as st
 
 import gusto_export
 import toast_payroll
-from toast_payroll import (ToastClient, pay_period_containing,
-                           previous_closed_pay_period, resolve_locations)
+from toast_payroll import (ToastClient, previous_closed_pay_period,
+                           resolve_locations)
 
 st.set_page_config(page_title="Nomina Toast a Gusto", page_icon="💸", layout="wide")
 
@@ -372,6 +372,13 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
     ])
     st.dataframe(cuadre, hide_index=True, use_container_width=True)
 
+    # Los huecos dentro de tolerancia son redondeo; arriba de eso hay dinero u
+    # horas sin explicar. Se usan los MISMOS umbrales que el exportador para que
+    # la pantalla no diga que cuadra cuando el exportador cree que no.
+    hueco_horas = horas_ent - horas_csv - horas_ret
+    cuadra = (abs(hueco_horas) <= gusto_export.TOLERANCIA_HORAS
+              and abs(hueco_tips) <= gusto_export.TOLERANCIA_TIPS)
+
     # El unico candado: un descuadre que la herramienta NO pudo atribuir. Todo lo
     # que si puede nombrar va a "para revisar" y lo decide quien opera: el
     # objetivo es llegar al resultado que se hacia a mano, no ser mas estricto
@@ -453,3 +460,14 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
                    "Import payroll data → Upload**, una empresa por archivo.")
         st.caption("Revisa en la pantalla de Gusto que los tips cayeron donde "
                    "esperas ANTES de procesar la nomina.")
+    else:
+        # Sin esta rama la pantalla terminaba en silencio cuando no cuadraba: el
+        # operador veia los CSV arriba y ninguna señal de que faltaba dinero.
+        st.error(
+            f"**Las cuentas NO cuadran.** Quedan {hueco_horas:,.2f} h y "
+            f"{money(hueco_tips)} sin explicar: no es redondeo. Antes de subir "
+            f"esto hay que saber de donde sale la diferencia, porque el CSV "
+            f"saldria incompleto y en Gusto se veria completo.")
+        st.caption("La tabla de arriba dice cuanto entro, cuanto fue al CSV y "
+                   "cuanto quedo retenido. El hueco es lo que no esta en ninguno "
+                   "de los tres.")

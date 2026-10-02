@@ -17,6 +17,7 @@ Lo que se prueba es lo que cuesta dinero si se rompe:
 from __future__ import annotations
 
 import csv
+import io
 import os
 import unittest
 import urllib.error
@@ -470,6 +471,49 @@ class TestReintento(unittest.TestCase):
         self.assertEqual(
             self.esperas, [toast_payroll.ToastClient.RATE_LIMIT_ESPERA_MAXIMA],
             "se respeto un Retry-After de una hora en vez de topalo")
+
+
+class TestNombresDefinidos(unittest.TestCase):
+    """Ningun modulo puede usar un nombre que no existe.
+
+    La app desplegada se cayo con `NameError: cuadra` en app.py: la variable se
+    usaba y nunca se asignaba. Los tests no lo vieron porque app.py es codigo de
+    Streamlit a nivel de modulo, que ningun test importa, y la rama solo se
+    alcanza despues de generar una nomina completa. pyflakes lo encuentra en un
+    segundo, asi que ahora es parte de la suite.
+    """
+
+    def test_ningun_nombre_sin_definir(self):
+        try:
+            from pyflakes import api, messages, reporter
+        except ImportError:
+            self.skipTest("falta pyflakes; esta en requirements.txt")
+
+        encontrados = []
+
+        class Colector(reporter.Reporter):
+            def __init__(self):
+                super().__init__(io.StringIO(), io.StringIO())
+
+            def flake(self, mensaje):
+                if isinstance(mensaje, (messages.UndefinedName,
+                                        messages.UndefinedLocal,
+                                        messages.UndefinedExport)):
+                    encontrados.append(
+                        f"{os.path.basename(mensaje.filename)}:"
+                        f"{mensaje.lineno} {mensaje.message % mensaje.message_args}")
+
+            def unexpectedError(self, filename, msg):
+                encontrados.append(f"{filename}: {msg}")
+
+        raiz = os.path.dirname(os.path.abspath(__file__))
+        colector = Colector()
+        for nombre in sorted(os.listdir(raiz)):
+            if nombre.endswith(".py"):
+                api.checkPath(os.path.join(raiz, nombre), colector)
+
+        self.assertEqual(encontrados, [], "nombres sin definir:\n  " +
+                         "\n  ".join(encontrados))
 
 
 if __name__ == "__main__":
