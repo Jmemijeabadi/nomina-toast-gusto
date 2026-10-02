@@ -637,6 +637,11 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
         # Sale como excepcion bloqueante en _collect_exceptions.
         work_period = 0.0
 
+    # Un break de comida que Toast reporta con missed=True llega con inDate y
+    # SIN outDate: no hay salida que marcar porque el descanso no ocurrio. Hay
+    # que pedir includeMissedBreaks=true para que vengan. Medido el 2026-10-02
+    # en el periodo 09-05/18: Gaslamp trae 51 de 136 asi y National City 0 de
+    # 267. Eso NO es un marcaje incompleto, es Toast diciendo que no se descanso.
     violations = []
     if start and end:
         if work_period > FIRST_MEAL_WAIVER_CEILING_HOURS:

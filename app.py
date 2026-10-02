@@ -357,7 +357,10 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
     tips_rep = resultado.get("tips_reported", 0.0)
     tips_csv = resultado.get("tips_placed", 0.0)
     tips_ret = sum(resultado.get("tips_held", {}).values())
-    hueco_tips = tips_rep - tips_csv - tips_ret
+    # Tercer bucket: tips que el pool dejo en cuentas que no son personas. Si no
+    # se resta, la pantalla reporta un hueco que no existe y asusta de gratis.
+    tips_sin_dueno = sum(resultado.get("tips_no_persona", {}).values())
+    hueco_tips = tips_rep - tips_csv - tips_ret - tips_sin_dueno
 
     horas_ent = resultado.get("hours_reported", 0.0)
     horas_csv = resultado.get("hours_placed", 0.0)
@@ -365,9 +368,11 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
     cuadre = pd.DataFrame([
         {"Concepto": "Horas", "Entro": f"{horas_ent:,.2f} h",
          "Al CSV": f"{horas_csv:,.2f} h", "Retenido": f"{horas_ret:,.2f} h",
+         "Sin dueño": "",
          "Sin explicar": f"{horas_ent - horas_csv - horas_ret:,.2f} h"},
         {"Concepto": "Tips", "Entro": money(tips_rep),
          "Al CSV": money(tips_csv), "Retenido": money(tips_ret),
+         "Sin dueño": money(tips_sin_dueno),
          "Sin explicar": money(hueco_tips)},
     ])
     st.dataframe(cuadre, hide_index=True, use_container_width=True)
@@ -415,6 +420,24 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
                          expanded=False):
             for aviso in resultado["warnings"]:
                 st.markdown(f"- {aviso}")
+
+
+    # ── salida tecnica ──
+    # Para poder revisar una corrida desde afuera hacen falta los numeros, no la
+    # pantalla. Esto junta todo en texto plano: se copia y se pega, o se baja.
+    # Es agregado y sin nombres ni correos; lo que lleva nombre ya esta en los
+    # avisos de arriba.
+    st.markdown("### Salida tecnica")
+    st.caption("Para revisar la corrida o reportar un problema: copia esto y "
+               "mandalo. Son conteos y totales, sin nombres ni correos.")
+    reporte = gusto_export.formatear_diagnostico(resultado, inicio, fin)
+    with st.expander("Ver el diagnostico", expanded=False):
+        st.code(reporte, language="text")
+    st.download_button(
+        "Descargar el diagnostico",
+        data=reporte,
+        file_name=f"diagnostico_{inicio:%Y%m%d}_{fin:%Y%m%d}.txt",
+        mime="text/plain", use_container_width=True)
 
     # ── resumen y descarga ──
     st.markdown("### Los CSV")

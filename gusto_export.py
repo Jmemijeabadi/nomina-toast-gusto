@@ -52,7 +52,8 @@ from datetime import date, datetime, timedelta
 
 import ca_overtime
 import toast_payroll
-from toast_payroll import (GUSTO_COMPANIES, MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+from toast_payroll import (FIRST_MEAL_WAIVER_CEILING_HOURS, GUSTO_COMPANIES,
+                           MEAL_PREMIUM_HOURS_CAP_PER_DAY, MEAL_WAIVERS_DOCUMENTED,
                            NON_PERSON_MARKERS,
                            ToastClient, audit_time_entry, load_employee_map,
                            resolve_locations, write_csv)
@@ -424,6 +425,26 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         if employee.get("excluir"):
             continue
         day_violations[(person_of(row["employee_guid"]), row["business_date"])] +=             len(row["violations"])
+    # Los descansos de comida no tomados, por sucursal. Vale decirlo aparte de
+    # la prima porque la asimetria entre sucursales es el dato que importa: si
+    # una concentra casi todos, no es mala suerte, es como se esta operando.
+    # Medido el 2026-10-02 en 09-05/18: Gaslamp 36 turnos, National City 0.
+    perdidos = defaultdict(lambda: {"turnos": 0, "personas": set()})
+    for row in audited:
+        if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
+            continue
+        if "Missed Meal Break" in row["violations"]:
+            acumulado = perdidos[row["location"]]
+            acumulado["turnos"] += 1
+            acumulado["personas"].add(row["employee_guid"])
+    for nombre_loc, datos in sorted(perdidos.items()):
+        revisar.append(
+            f"{nombre_loc}: {datos['turnos']} turno(s) de "
+            f"{len(datos['personas'])} persona(s) arriba de 6 h donde Toast "
+            f"reporta el descanso de comida como NO tomado. La prima ya va en el "
+            f"CSV, asi que la nomina esta bien; lo que conviene mirar es por que "
+            f"pasa, sobre todo si una sucursal concentra casi todos.")
+
     premium_por_persona = defaultdict(float)
     for (persona, _day), count in day_violations.items():
         if count > 0:
@@ -607,6 +628,43 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         revisar.append(
             f"${amount:,.2f} de tips de '{who}' ({job}, {loc}) no se pudieron "
             f"ubicar en el template de Gusto. Sin resolverlo esos tips no se pagan.")
+
+    # Quien trabajo y no recibio NADA del pool, en una sucursal donde el pool si
+    # repartio. No lo decide la herramienta: el reporte de tips es la fuente. Pero
+    # si alguien tiene horas y el reporte no lo menciona, lo mas probable es que
+    # sus turnos no traigan job en Toast y el pool no haya podido acreditarlo.
+    # Eso es dinero que quiza le toca, y a simple vista no se ve: su renglon del
+    # CSV sale con horas y la columna de tips vacia, igual que un puesto que
+    # legitimamente no recibe del pool.
+    for location in locations:
+        if not location["configured"]:
+            continue
+        company = location["company"]
+        if not (tip_reports.get(company) or []):
+            continue
+        pagados = {
+            pago for (comp, pago, _t), celda in tips_by_cell.items()
+            if comp == company and (celda.get("non_cash", 0.0)
+                                    or celda.get("cash", 0.0)
+                                    or celda.get("gratuity", 0.0))
+        }
+        if not pagados:
+            continue
+        for (pago, comp, titulo), celda in sorted(hours_by_cell.items()):
+            if comp != company or pago in pagados:
+                continue
+            horas = (celda.get("regular", 0.0) + celda.get("overtime", 0.0)
+                     + celda.get("double", 0.0))
+            if horas <= 0.005:
+                continue
+            revisar.append(
+                f"{location['short']}: alguien con {horas:.2f} h en '{titulo}' "
+                f"(id de Gusto {pago}) no recibio NADA del pool, mientras el "
+                f"resto de la sucursal si. Hay dos explicaciones y conviene "
+                f"saber cual es: que ese puesto no reciba del pool segun la "
+                f"politica de Tips Manager, y entonces esta bien; o que sus "
+                f"turnos no traigan job en Toast, y entonces el pool no pudo "
+                f"acreditarlo y son tips que no le llegaron.")
 
     # Paso 6: llenar el template de cada empresa.
     output = {}
@@ -793,14 +851,168 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"Cierre de HORAS: entraron {hours_reported:.2f} h, salieron "
             f"{hours_placed:.2f} h al CSV y {hours_held:.2f} h a retenidos. "
             f"Faltan {hueco_horas:.2f} h sin explicar; no subir hasta cuadrarlo.")
+    # Diagnostico: lo que hace falta para revisar una corrida sin tener acceso a
+    # la cuenta. Es agregado a proposito — conteos, totales y desgloses, sin
+    # nombres ni correos — porque se pensó para pegarse en un chat o un correo.
+    # Los nombres que si importan ya salen en problems/revisar/warnings.
+    diag_loc = {}
+    for location in locations:
+        nombre_loc = location["short"]
+        del_loc = [r for r in audited if r["location"] == nombre_loc]
+        viol = defaultdict(int)
+        for r in del_loc:
+            for v in r["violations"]:
+                viol[v] += 1
+        meals = [b for r in del_loc for b in r["breaks"] if b["is_meal_type"]]
+        diag_loc[nombre_loc] = {
+            "mapeada": location["configured"],
+            "template": (location["template"] if location["configured"] else ""),
+            "turnos": len(del_loc),
+            "turnos_arriba_de_6h": sum(
+                1 for r in del_loc if r["work_period_hours"] > FIRST_MEAL_WAIVER_CEILING_HOURS),
+            "turnos_abiertos": sum(1 for r in del_loc if r["is_open_shift"]),
+            "turnos_asalariados": sum(1 for r in del_loc if r["is_salaried_shift"]),
+            "horas_pagables": round(sum(r["payable_hours"] for r in del_loc), 2),
+            "breaks_de_comida": len(meals),
+            "breaks_no_tomados": sum(1 for b in meals if b["missed"]),
+            "breaks_renunciados": sum(1 for b in meals if b["waived"]),
+            "violaciones": dict(sorted(viol.items())),
+        }
+
+    diagnostico = {
+        "semana_laboral_arranca": ca_overtime.WORKWEEK_START_WEEKDAY,
+        "semana_laboral_confirmada": ca_overtime.WORKWEEK_START_CONFIRMED,
+        "tope_prima_por_dia": MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+        "waivers_documentados": MEAL_WAIVERS_DOCUMENTED,
+        "columna_de_tips": NON_CASH_TIPS_COLUMN,
+        "columna_de_prima": MEAL_PREMIUM_COLUMN,
+        "tolerancia_horas": TOLERANCIA_HORAS,
+        "tolerancia_tips": TOLERANCIA_TIPS,
+        "reportes_de_tips_recibidos": {
+            comp: len(filas or []) for comp, filas in sorted((tip_reports or {}).items())},
+        "por_sucursal": diag_loc,
+    }
+
     return {"by_company": output, "problems": sorted(set(problems)),
+
             "revisar": sorted(set(revisar)),
             "hours_reported": round(hours_reported, 2),
             "hours_placed": round(hours_placed, 2),
             "hours_held": round(hours_held, 2),
             "tips_reported": round(tips_reported_total, 2),
             "tips_placed": round(placed, 2), "tips_held": tips_held,
-            "warnings": sorted(set(warnings)), "held_back": held_back}
+            # Tips que el pool dejo en una cuenta que no es una persona. Es un
+            # tercer bucket, no cero: sin exponerlo, quien reconcilia ve un
+            # hueco fantasma del tamano de esas cuentas.
+            "tips_no_persona": tips_no_persona,
+            "warnings": sorted(set(warnings)), "held_back": held_back,
+            "diagnostico": diagnostico}
+
+
+def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> str:
+    """Arma el reporte tecnico de una corrida, en texto, para pegar o adjuntar.
+
+    Existe porque revisar una corrida desde afuera requiere los numeros, no la
+    pantalla: cuantos turnos, cuantas violaciones de cada tipo, como cerro el
+    cuadre, que avisos salieron. Es agregado y sin nombres ni correos porque se
+    va a pegar en un chat; lo que lleva nombre ya viene en los avisos.
+    """
+    d = resultado.get("diagnostico") or {}
+    L = []
+    w = L.append
+
+    w("=" * 72)
+    w(f"  DIAGNOSTICO DE LA CORRIDA   {start} a {end_inclusive}")
+    w("=" * 72)
+
+    w("")
+    w("CONFIGURACION")
+    dias = ("lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo")
+    arranque = d.get("semana_laboral_arranca")
+    w(f"  semana laboral arranca      {dias[arranque] if isinstance(arranque, int) else '?'}"
+      f"  (confirmada={d.get('semana_laboral_confirmada')})")
+    w(f"  tope de prima por dia       {d.get('tope_prima_por_dia')} h")
+    w(f"  waivers de meal documentados {d.get('waivers_documentados')}")
+    w(f"  tips no-efectivo a la columna '{d.get('columna_de_tips')}'")
+    w(f"  prima a la columna          '{d.get('columna_de_prima')}'")
+    w(f"  tolerancia del cuadre       {d.get('tolerancia_horas')} h / "
+      f"${d.get('tolerancia_tips')}")
+    recibidos = d.get("reportes_de_tips_recibidos") or {}
+    if recibidos:
+        for comp, n in recibidos.items():
+            w(f"  reporte de tips             {comp}: {n} renglones")
+    else:
+        w("  reporte de tips             NINGUNO (las columnas de tips van vacias)")
+
+    w("")
+    w("POR SUCURSAL")
+    for nombre, s in (d.get("por_sucursal") or {}).items():
+        w(f"  {nombre}   {'mapeada' if s['mapeada'] else 'SIN EMPRESA DE GUSTO'}")
+        w(f"     turnos {s['turnos']}  (arriba de 6 h: {s['turnos_arriba_de_6h']}, "
+          f"abiertos: {s['turnos_abiertos']}, asalariados: {s['turnos_asalariados']})")
+        w(f"     horas pagables {s['horas_pagables']:,.2f}")
+        w(f"     breaks de comida {s['breaks_de_comida']}  "
+          f"(no tomados: {s['breaks_no_tomados']}, "
+          f"renunciados: {s['breaks_renunciados']})")
+        if s["violaciones"]:
+            for tipo, n in s["violaciones"].items():
+                w(f"        {tipo:24} {n}")
+        else:
+            w("        sin violaciones")
+
+    w("")
+    w("CIERRE DE CUENTAS")
+    hr, hc, hh = (resultado.get("hours_reported", 0.0),
+                  resultado.get("hours_placed", 0.0),
+                  resultado.get("hours_held", 0.0))
+    tr, tc = resultado.get("tips_reported", 0.0), resultado.get("tips_placed", 0.0)
+    th = sum((resultado.get("tips_held") or {}).values())
+    tn = sum((resultado.get("tips_no_persona") or {}).values())
+    w(f"  horas  entro {hr:>10,.2f}  al CSV {hc:>10,.2f}  retenido {hh:>9,.2f}"
+      f"  SIN EXPLICAR {hr - hc - hh:>+9,.2f}")
+    w(f"  tips   entro {tr:>10,.2f}  al CSV {tc:>10,.2f}  retenido {th:>9,.2f}"
+      f"  sin dueno {tn:>8,.2f}  SIN EXPLICAR {tr - tc - th - tn:>+9,.2f}")
+
+    w("")
+    w("LOS CSV")
+    for company, filas in sorted((resultado.get("by_company") or {}).items()):
+        def suma(col):
+            return sum(float(f[col] or 0) for f in filas)
+        con_algo = sum(1 for f in filas if any(
+            (f[c] or "") for c in ("regular_hours", "overtime_hours",
+                                   "double_overtime_hours", "missed_break_hours",
+                                   NON_CASH_TIPS_COLUMN, "cash_tips",
+                                   "custom_earning_distributed_service_charges")))
+        w(f"  {company}")
+        w(f"     renglones {len(filas)}  (con algun dato: {con_algo}, "
+          f"en blanco: {len(filas) - con_algo})")
+        w(f"     regular {suma('regular_hours'):>10,.2f}   "
+          f"OT {suma('overtime_hours'):>8,.2f}   "
+          f"DT {suma('double_overtime_hours'):>7,.2f}")
+        w(f"     prima de meal {suma('missed_break_hours'):>7,.2f} h")
+        w(f"     tips: paycheck {suma(NON_CASH_TIPS_COLUMN):>10,.2f}  "
+          f"efectivo {suma('cash_tips'):>8,.2f}  "
+          f"gratuity {suma('custom_earning_distributed_service_charges'):>9,.2f}")
+
+    retenidos = [h for h in (resultado.get("held_back") or [])
+                 if h["horas"] > 0 or h["tips"] > 0]
+    if retenidos:
+        w("")
+        w(f"NO ENTRARON AL CSV ({len(retenidos)})")
+        for h in retenidos:
+            w(f"  {h['horas']:>8,.2f} h  ${h['tips']:>9,.2f}   {h['motivo']}")
+
+    for etiqueta, clave in (("BLOQUEA", "problems"), ("PARA REVISAR", "revisar"),
+                            ("AVISOS", "warnings")):
+        items = resultado.get(clave) or []
+        w("")
+        w(f"{etiqueta} ({len(items)})")
+        for item in items:
+            w(f"  - {item}")
+
+    w("")
+    w("=" * 72)
+    return "\n".join(L)
 
 
 def main() -> int:
