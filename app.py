@@ -153,41 +153,55 @@ with st.sidebar:
                    "TOAST_CLIENT_SECRET. Ver `secrets.toml.example`.")
         st.stop()
 
-    # Configuracion: en local los archivos estan en el directorio; desplegada se
-    # suben aca y viven solo en la sesion, nunca en el repo.
+    # Configuracion: los mapeos y los templates vienen en el repo, asi que la app
+    # no pide nada. El uploader existe solo para reemplazarlos sin tener que
+    # commitear, por ejemplo cuando entra alguien nuevo y hay que actualizar el
+    # mapeo a mitad de una quincena.
+    propios = st.session_state.get("dir_config")
+    if propios:
+        os.environ["PAYROLL_DATA_DIR"] = propios
+        toast_payroll.DATA_DIR = propios
+
     faltan_config = [n for n in ARCHIVOS_CONFIG
                      if not os.path.exists(toast_payroll.data_path(n))]
+
+    st.divider()
     if faltan_config:
-        st.divider()
-        st.subheader("Configuracion")
-        st.caption("Estos archivos traen nombres y sueldos, asi que no viven en "
-                   "el repo. Subilos una vez por sesion.")
-        destino = st.session_state.get("dir_config")
-        if not destino:
+        st.error(f"Falta la configuracion: {', '.join(faltan_config)}")
+        st.caption("Deberia venir en el repo. Subila aca para esta sesion.")
+    else:
+        st.caption("Configuracion cargada del repo.")
+
+    with st.expander("Cambiar la configuracion de esta sesion", expanded=bool(faltan_config)):
+        st.caption("Solo si hace falta un mapeo mas nuevo que el del repo. Lo que "
+                   "subas vale para esta sesion; para que quede, hay que "
+                   "commitearlo.")
+        if not propios:
+            import shutil
             import tempfile
-            destino = tempfile.mkdtemp(prefix="payroll_cfg_")
-            st.session_state["dir_config"] = destino
-        os.environ["PAYROLL_DATA_DIR"] = destino
-        toast_payroll.DATA_DIR = destino
+            propios = tempfile.mkdtemp(prefix="payroll_cfg_")
+            for nombre in ARCHIVOS_CONFIG:
+                origen = toast_payroll.data_path(nombre)
+                if os.path.exists(origen):
+                    shutil.copy(origen, os.path.join(propios, nombre))
+            st.session_state["dir_config"] = propios
+            os.environ["PAYROLL_DATA_DIR"] = propios
+            toast_payroll.DATA_DIR = propios
 
         for nombre, etiqueta in ARCHIVOS_CONFIG.items():
-            ruta = os.path.join(destino, nombre)
-            if os.path.exists(ruta):
-                st.success(f"{etiqueta}", icon="✅")
-                continue
             subido = st.file_uploader(etiqueta, type=["csv"], key=f"cfg_{nombre}")
             if subido is not None:
-                with open(ruta, "wb") as destino_archivo:
-                    destino_archivo.write(subido.getvalue())
+                with open(os.path.join(propios, nombre), "wb") as archivo:
+                    archivo.write(subido.getvalue())
+                get_locations.clear()
                 st.rerun()
+            ruta = os.path.join(propios, nombre)
+            if os.path.exists(ruta):
+                st.caption(f"✅ {nombre}")
 
-        pendientes = [n for n in ARCHIVOS_CONFIG
-                      if not os.path.exists(os.path.join(destino, n))]
-        if pendientes:
-            st.info(f"Falta subir: {', '.join(pendientes)}")
-            st.stop()
-        get_locations.clear()
-        st.divider()
+    if faltan_config:
+        st.stop()
+    st.divider()
 
     try:
         locations = get_locations()

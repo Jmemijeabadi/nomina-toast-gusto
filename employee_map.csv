@@ -1,0 +1,77 @@
+toast_guid,toast_location,toast_name,toast_email,toast_phone,person_key,persona_confirmada,gusto_employee_id,gusto_name,confianza,accion,nota
+83c6a922-9b3a-4ff1-b284-f44185228c4a,Gaslamp Quarter,"Arellano Eleazar, Lizbeth",lizbetharellano4@yahoo.com,6197133163,lizbetharellano4@yahoo.com,,38ce66,"Arellano Eleazar, Lizbeth",exacto,,
+7d1603f1-2d86-478f-a003-d8f976025e32,Gaslamp Quarter,"Benito Torres, Hugo Alberto",medina_1720@icloud.com,6199678465,medina_1720@icloud.com,,f03d1a,"Benito, Hugo",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+d4a90bf2-5b38-470e-b702-e986259baaf0,Gaslamp Quarter,"Corrales, Alexa",alexa@tacoselfranc.com,6197217679,alexa@tacoselfranc.com,CONFIRMAR,eddc96,"Corrales, Alexa",exacto,,"Gusto: first_name=Gloria, preferred_first_name=Alexa, code=eddc96 (via MCP)"
+85ab6d40-e73e-4f99-8bc1-e0f90726d965,Gaslamp Quarter,"For All Devices, KDS Login",,,85ab6d40-e73e-4f99-8bc1-e0f90726d965,,,,no-persona,EXCLUIR,"cuenta de dispositivo o de sistema, no se paga"
+bea58125-3208-4ab1-80c8-fa1e42b7f58a,Gaslamp Quarter,"Garcia, Paola Joanna",,6195650538,bea58125-3208-4ab1-80c8-fa1e42b7f58a,,4ca8e6,"Garcia, paola",seguro,,
+b833e981-5653-4f3e-87f0-1677e859a9ef,Gaslamp Quarter,"Gomez, Francisco",,,b833e981-5653-4f3e-87f0-1677e859a9ef,,ad6e28,"Gomez, Francisco",exacto,,
+429dac6f-31dd-48e7-a368-7afe176ffce8,Gaslamp Quarter,"Kelly, Isabella",isabellakelly213@gmail.com,6197190868,isabellakelly213@gmail.com,,d468aa,"Kelly, Isabella",exacto,,
+2b5763f1-5a51-4ce5-b9f7-0453966fea33,Gaslamp Quarter,"Lopez, Eduardo",,6195876159,2b5763f1-5a51-4ce5-b9f7-0453966fea33,,3f3c41,"Lopez, Eduardo",exacto,,
+b1d61995-e7c6-4b18-8048-cacc81923c7e,Gaslamp Quarter,"Lopez, Servando",servandolopez005@gmail.com,6197103019,servandolopez005@gmail.com,,5753cf,"Lopez, Servando",exacto,,
+0934d17b-ff03-4080-a8e9-f95c379a436c,Gaslamp Quarter,"Madriles Gonzales, Abraham",,6199444158,0934d17b-ff03-4080-a8e9-f95c379a436c,,415d0f,"Madriles Gonzalez, Abraham",seguro,,apellido y nombre de pila coinciden
+a228999e-7919-45d8-aca2-0806faf98055,Gaslamp Quarter,"Martinez, Emilio",emiliogarcamartine@gmail.com,5637885832,emiliogarcamartine@gmail.com,,24094d,"Martinez Garcia, Emilio",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+e6e1c549-ec7e-4d3f-adc4-e49ececc4d52,Gaslamp Quarter,"Mendoza Arce, Berenice",cazaresguzmanrosaisela@gmail.com,6632255795,cazaresguzmanrosaisela@gmail.com,,588981,"Mendoza Arce, Berenice",exacto,,
+5b4946d7-2ede-4aad-9b34-797b0c041080,Gaslamp Quarter,"Ochoa, Sofia",soochoa24@gmail.com,,soochoa24@gmail.com,,b98d46,"Ochoa, Sofia",exacto,,
+077f6dcf-f7c0-48c7-b8e0-a455cd405656,Gaslamp Quarter,"Ochoa, AB Jared",abochoa8@gmail.com,6198838452,abochoa8@gmail.com,,ad447e,"Ochoa, AB",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+aa015180-50f4-4ac8-9576-8efd3637f29d,Gaslamp Quarter,"Orozco Carmona, Benjamin",enano9322@gmail.com,6196094473,enano9322@gmail.com,CONFIRMAR,ac9e81,"Orozco carmona, Benjamin",exacto,,
+fc8691fb-d1ba-4a54-9363-96f3af5291fd,Gaslamp Quarter,"Ortega, David",dvidmrtinz03@gmail.com,,dvidmrtinz03@gmail.com,,faafec,"Martinez Ortega, David",seguro,,apellido y nombre de pila coinciden
+0a665264-8f01-470a-9b55-4419ce39ae58,Gaslamp Quarter,"Parra Bejarano, Bladimir",arlethbeltran26@icloud.com,7077892548,arlethbeltran26@icloud.com,,,,ninguno,CONFIRMAR,sin candidato en el template de Gusto
+31debb81-a58d-4fe0-af59-d89f858747ef,Gaslamp Quarter,"Ramirez, Felipe",osvaldovelez81@gmail.com,,osvaldovelez81@gmail.com,,5a057d,"Ramirez, Felipe",exacto,,
+c9bee8c6-71ac-413a-a1a1-2e69351616d7,Gaslamp Quarter,"Ramirez, Eleazar",alvaradoavatar@gmail.com,6193860944,alvaradoavatar@gmail.com,,f086d1,"Ramirez, Eleazar",exacto,,
+5722ac69-6487-4d5b-a38c-9bb5809d341e,Gaslamp Quarter,"Rosillo, Robbie",robbietj1985@yahoo.com,,robbietj1985@yahoo.com,,6704d6,"Rosillo Paz, Robbie",seguro,,apellido y nombre de pila coinciden
+bf0a505a-33f0-4cac-9922-c1e88d9807d0,Gaslamp Quarter,"Salazar, Luis",luisesalazar186@gmail.com,6195145050,luisesalazar186@gmail.com,,5338e6,"Salazar, Luis",exacto,,
+1059fea7-dd36-482d-8a6d-07e866254127,Gaslamp Quarter,"Santiago Cruz, Angelica S",majoangie12@gmail.com,9093330134,majoangie12@gmail.com,,44f1a9,"Santiago Cruz, Angelica",exacto,,
+415f926f-1fa7-48d8-8dd7-b4f9f794b6e0,Gaslamp Quarter,"Soberanis, Mario",mario.soberanis@icloud.com,8582133217,mario.soberanis@icloud.com,,8d2634,"Soberanis, Mario",exacto,,
+cceb91c9-dbeb-4de6-a888-c5907eb636a9,Gaslamp Quarter,"Solano Vazquez, Rafael",,7146840093,cceb91c9-dbeb-4de6-a888-c5907eb636a9,,45705e,"Solano Vazquez, Rafael",exacto,,
+9390726f-7baf-4d04-8d35-7ca91f75f78d,Gaslamp Quarter,"Torres, Javier",javiercebrerotorres188@gmail.com,6193626962,javiercebrerotorres188@gmail.com,,62418f,"Cebrero Torres, Javier",seguro,,apellido y nombre de pila coinciden
+a304b274-0528-4596-b6fb-e3684176e646,Gaslamp Quarter,"Valdez Cisneros, Carlos",carlosss1307@gmail.com,5513827192,carlosss1307@gmail.com,,cfc533,"Valdez Cisneros, Carlos",exacto,,
+8452f6fd-b590-44fa-9b63-4e7daa0b2907,National City,"Aguilar, Daisy",daisyaguilar420@icloud.com,8163499549,daisyaguilar420@icloud.com,,b4c2b5,"Aguilar, Daisy",exacto,,
+8717303c-f7b0-4a79-9cc2-5e84b6036eab,National City,"Alcala, Guadalupe Leticia",gnm4086223@gmail.com,6197344322,gnm4086223@gmail.com,,1c4f55,"Alcala, Guadalupe",seguro,,apellido y nombre de pila coinciden
+f4937344-adae-4689-a6bc-4adcf697f0de,National City,"Anistro, Carlos",,6192924415,f4937344-adae-4689-a6bc-4adcf697f0de,,c0fce2,"Anistro, Carlos",exacto,,
+552d8b8e-0688-4508-a776-5c24a01e16c2,National City,"Arellano, Andrik",,6199189109,552d8b8e-0688-4508-a776-5c24a01e16c2,,a76077,"Arellano, Andrik",exacto,,
+836dd86c-a3c8-460e-88f6-9efedf33b773,National City,"Arellano, Daisy",daisyarellano94@hotmail.com,6192929365,daisyarellano94@hotmail.com,,ef8d93,"Arellano, Daisy",exacto,,
+9d87dc55-e1a9-4a3c-b7d2-1ed91f3187e2,National City,"Arias, Sergio",hiascg537@gmail.com,,hiascg537@gmail.com,,7efafb,"Arias, Sergio",exacto,,
+1d42a5ec-0367-4150-8d46-88ea7cf06be8,National City,"Blancas Gonzales, Aide",aideblancas3@gmail.com,6199189063,aideblancas3@gmail.com,,71a235,"Blancas Gonzalez, Aide",seguro,,apellido y nombre de pila coinciden
+e07aec4a-72b2-4c6e-95a4-fe470c65e10b,National City,"Buenaventura, Esmeralda",esmeraldabuena40@gmail.com,6196840793,esmeraldabuena40@gmail.com,,,,ninguno,CONFIRMAR,sin candidato en el template de Gusto
+e1b67812-3cdd-4329-aeac-8bb8224a779e,National City,"Caudillo, Blas",blasito2126@icloud.com,,blasito2126@icloud.com,,3405ce,"Garcia Caudillo, Blas",seguro,,apellido y nombre de pila coinciden
+7cef5636-7cda-4eb8-8836-8d3e2e6c4719,National City,"Concha, Luis",,6197922688,7cef5636-7cda-4eb8-8836-8d3e2e6c4719,,4f26e0,"Conchas Solorio, Luis",seguro,,apellido y nombre de pila coinciden
+f48aac81-1e6e-4efd-bb14-a9d77317bee4,National City,"Corrales, Alexa",g.alexatef@gmail.com,6197217679,alexa@tacoselfranc.com,CONFIRMAR,790a52,"Corrales, Alexa",exacto,,
+16d29159-4716-4f31-ad6f-6cbaa9a10d31,National City,"De La Trinidad, Marilyn",marilynrojas8919@gmail.com,6198836670,marilynrojas8919@gmail.com,,4bbbae,"DeLaTrinidad, Marilyn",seguro,,apellido y nombre de pila coinciden
+e1d8b65a-ec33-4cbf-96a8-453e5121b8aa,National City,"Delgado, Dustin",,6194180049,e1d8b65a-ec33-4cbf-96a8-453e5121b8aa,,e24e47,"Delgado, Dustin",exacto,,
+3f137a1a-4d99-49b8-9c10-6634a970992b,National City,"Felix, Carolina",felixcarolina1717@gmail.com,6199255845,felixcarolina1717@gmail.com,,5a634d,"Felix, Carolina",exacto,,
+a5c9a71f-035e-4f38-b6f0-5cd4e02654d4,National City,"Garcia, Blas",garcia030267@gmail.com,6199423556,garcia030267@gmail.com,,fd53b6,"Garcia, Blas",exacto,,
+e3c83bff-36e0-47c9-9c1e-ecf56f4c9853,National City,"Garcia, Ruben",pesaruben@hotmail.com,6197694380,pesaruben@hotmail.com,,3cf8f1,"Garcia, Ruben",exacto,,
+ac04d34f-4501-4bb3-8338-7ec57ad3d67f,National City,"Hernadez Martinez, Alan",alanhernandezmartinez06656@gmail.com,6197057028,alanhernandezmartinez06656@gmail.com,,0b7ca3,"Hernandez Martinez, Alan",seguro,,apellido y nombre de pila coinciden; descartados 3 con solo el apellido parecido
+58a0405f-5bcd-4165-a043-47977024fae7,National City,"Hernandez Martinez, Vicente",hernandezmartinezvicente016@gmail.com,6199605871,hernandezmartinezvicente016@gmail.com,,c4f544,"Hernandez Martinez, Vicente",exacto,,
+e66f78ae-a420-4762-a6e7-7c650a03b35c,National City,"Inzunza, Elmer Ricardo",inzunzaelmerr@gmail.com,2133939212,inzunzaelmerr@gmail.com,,b569c1,"Inzunza Oliveros, Elmer",seguro,,apellido y nombre de pila coinciden
+d81949e4-16e5-4526-b095-6cfc1855be6e,National City,"Ivan Rubio, Javier",javierivanrubio1991@gmail.com,6196322457,javierivanrubio1991@gmail.com,,edf605,"Rubio, Javier",seguro,,apellido y nombre de pila coinciden
+8da9214a-0a4e-4a2b-b8c9-37cfbc50f542,National City,"KIng, Viviana",king_viviana@yahoo.com,6193001096,king_viviana@yahoo.com,,8fc851,"King, Viviana",exacto,,
+8d7f0358-9787-4f85-9256-27d3413ae98e,National City,"Ledezma, Efrein",bryanalainledezma@gmail.com,8583981166,bryanalainledezma@gmail.com,,,,ninguno,CONFIRMAR,sin candidato en el template de Gusto
+94d08299-5e4c-40aa-88f9-3158808a95a8,National City,"Lizarraga Moreno, Fernanda",frrnnlm.24@gmail.com,6197968076,frrnnlm.24@gmail.com,,06c486,"Lizarraga Moreno, Fernanda",exacto,,
+bbe2b33a-cbdd-4275-9205-e47f3ef252ca,National City,"Martinez, Lindamarie",,6199197039,bbe2b33a-cbdd-4275-9205-e47f3ef252ca,,43fd4a,"Martinez, Lindamarie",exacto,,
+42d550a9-61f2-4476-846f-3727dddd3f7c,National City,"Martínez, Martín",martinoli06@icloud.com,6197340666,martinoli06@icloud.com,,b4d699,"Martinez, Martin",exacto,,
+ff0f01e4-abc4-415f-b961-25bbce1c22cc,National City,"Mendoza, Martha",marthamen636@gmail.com,,marthamen636@gmail.com,,7c79e6,"Mendoza Penaloza, Martha",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+fd2c022c-084c-4fcf-b1c9-64c3b33391d8,National City,"mendoza, Yahir",1365jcmoreno@gmail.com,6195369939,1365jcmoreno@gmail.com,,b7bc59,"Mendoza Rojo, Yahir",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+f0e3bc2c-2329-4eb1-b006-2abe187191e4,National City,"Miranda, Fatima",bolanosfatima472@gmail.com,6192797761,bolanosfatima472@gmail.com,,f28bda,"Miranda, Fatima",exacto,,
+fe09c7ef-9292-4b3a-baae-2118f270522f,National City,"Montes, Eduardo",eduardomadrid104@gmail.com,6198795297,eduardomadrid104@gmail.com,,54bc0b,"Montes, Eduardo",exacto,,
+2bef34e1-b863-4505-8ac0-04735556ba08,National City,"Mora, Diego",diegomorawork00@gmail.com,6199952758,diegomorawork00@gmail.com,,ba32c2,"Mora Santos, Diego",seguro,,apellido y nombre de pila coinciden
+154c6463-22ba-437b-bd17-63993a535536,National City,"Morales, Gilberto",gilbertomorales91@icloud.com,6193018753,gilbertomorales91@icloud.com,,,"Morales, Jazmin | Morales Guzman, Patricia",revisar,CONFIRMAR,apellido parecido pero el nombre de pila NO coincide
+0375fbbc-9848-400c-9bca-fdc3f9f2705d,National City,"Morales, Patricia",pattymorales257@gmail.com,6193825720,pattymorales257@gmail.com,,eb7dae,"Morales Guzman, Patricia",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+1e35cc29-72d5-4139-b7b9-7cdecb25b495,National City,"Morales, Jazmin",jazvelvet4@gmail.com,6192731510,jazvelvet4@gmail.com,,2e8846,"Morales, Jazmin",exacto,,
+f451deb3-cd6b-4506-b035-a1a6048b7f16,National City,"Munoz, Andre",andremunozhuerta34@gmail.com,6193297033,andremunozhuerta34@gmail.com,,6fb376,"Munoz, Octavio",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+d8083774-da79-43f4-a8b7-eaaebc4c59be,National City,"Munoz, Valetina",valer.ira.dm@gmail.com,6198061687,valer.ira.dm@gmail.com,,cc4759,"Munoz, Valentina",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+1aaaf8de-2e2b-4624-8c2b-a1488e6626f7,National City,"Nunez, Alejandra",nunezalejaa@gmail.com,6193891023,nunezalejaa@gmail.com,,a603e9,"Nunez, Alejandra",exacto,,
+b3a451b6-a19e-4c17-af08-2975d9d3516a,National City,"Orozco Carmona, Benjamin",enano9322@gmail.com,6196094473,enano9322@gmail.com,CONFIRMAR,b678b6,"Orozco Carmona, Benjamin",exacto,,
+7fd3c98c-3c56-4cca-aab5-f0a53568b2a7,National City,"Pacheco, Karina",pkarinag.30@gmail.com,6193661168,pkarinag.30@gmail.com,,ae8eac,"Pacheco, Karina",exacto,,
+e867d288-c2e4-4874-bfd2-6508235cedc7,National City,"Pineda, Reyna",reyna2008pineda@gmail.com,6198448539,reyna2008pineda@gmail.com,,7e7a40,"Pineda, Reyna",exacto,,
+b868cb95-c399-4340-96d1-443f73d5992d,National City,"Prado, Antonia",marielahinojosa32@gmail.com,,marielahinojosa32@gmail.com,,7ab141,"Prado, Antonia",exacto,,
+dc9fc13a-a765-469e-bcec-a9721c13a9cc,National City,"Ramirez, Matthew",kios1994@icloud.com,7609082830,kios1994@icloud.com,,2851e4,"Ramirez, Matthew",exacto,,
+e9ad938f-bb00-4476-ad4e-074337f80fa9,National City,"Ruiz Lopez, Maximo",miguelgl7777@gmail.com,6633410000,miguelgl7777@gmail.com,,6acdc4,"Ruiz Lopez, Miguel",revisar,,"Gusto: first_name=Maximo, preferred_first_name=Miguel, code=6acdc4 (via MCP). Una sola persona."
+27a36233-8d6c-4fd9-a713-2ebdbec990b2,National City,"Sanchez, Jsleight",mystifiersent@gmail.com,4803598223,mystifiersent@gmail.com,,1f5d62,"Sanchez Briseno, Jose S",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+54367318-736b-4ee7-ba37-dbfffc5b30af,National City,"Sánchez, Juan",sodabeach3@hotmail.com,,sodabeach3@hotmail.com,,b1c2ea,"Sanchez Garcia, Juan",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+699972de-f521-44b5-99c6-98accd261ec4,National City,"Soriano, Omar",,8586528126,699972de-f521-44b5-99c6-98accd261ec4,,2a813b,"Soriano, Omar",exacto,,
+2d11fbd3-2462-492f-860b-14883809a758,National City,"Tornes, Humberto",humbertotornes@yahoo.com,,humbertotornes@yahoo.com,,e532d9,"Tornes, Humberto",exacto,,
+99e4b12a-00cf-4689-bb40-74e7bff2e775,National City,"Valdivia, Cesar",cesarvaldivia238@gmail.com,,cesarvaldivia238@gmail.com,,46588c,"Valdivia Casas, Cesar",seguro,,apellido y nombre de pila coinciden
+344c6b34-cdad-4f7b-8831-540a820f0a7b,National City,"Vazquez, Omara",omara.rosas6@gmail.com,6196032681,omara.rosas6@gmail.com,,68043f,"Vazquez Rosas, Mara",seguro,,apellido y nombre de pila coinciden; descartados 1 con solo el apellido parecido
+727dca92-786f-4ecc-968b-21d3362eb1d1,National City,"Vazquez, Kris",,6194836926,727dca92-786f-4ecc-968b-21d3362eb1d1,,dcee23,"Vazquez, Kris",exacto,,
+1e59e637-b053-4e35-9eb7-753b6d834644,National City,"Vizcarra, Valery",valeryibethk@gmail.com,6232747232,valeryibethk@gmail.com,,d5b60d,"Vizcarra, Valery",exacto,,

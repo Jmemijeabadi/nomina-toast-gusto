@@ -12,11 +12,14 @@ gusto_import_*.csv
 # Archivos de referencia de Tany: nombres y sueldos reales.
 reference/
 
-# Los mapeos y los templates traen nombres, emails, telefonos y gusto_employee_id
-# de 76 personas. La app los necesita, pero no van a un repo.
-employee_map.csv
-job_map.csv
-gusto_template_*.csv
+# Los mapeos y los templates SI van al repo (privado): son configuracion, no
+# secretos. No llevan sueldos, SSN ni datos bancarios: son nombres, job titles y
+# el employee_code de Gusto, mas el email y telefono en el mapeo. Commitearlos es
+# lo que hace que el deploy sea automatico y que las confirmaciones humanas
+# persistan entre sesiones.
+#
+# Lo que NUNCA va: las credenciales (arriba) y los CSV de nomina ya generados,
+# que si traen horas, tips y primas por persona (abajo).
 
 # Los CSV de nomina ya generados
 salida/

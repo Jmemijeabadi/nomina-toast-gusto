@@ -1,0 +1,22 @@
+toast_location,toast_job,turnos_en_periodo,gusto_title,confianza,accion,nota
+Gaslamp Quarter,Taquero,162,Taquero,exacto,,
+Gaslamp Quarter,Cashier,94,cashier,exacto,,
+Gaslamp Quarter,Tortilla station,68,preparadora de tortilla,seguro,,equivalencia conocida: Tortilla station = preparadora de tortilla
+Gaslamp Quarter,Prep,52,Prep,exacto,,
+Gaslamp Quarter,Dishwasher,18,dishwasher,exacto,,
+Gaslamp Quarter,Lead,13,cashier,ninguno,,"Solo Alexa Corrales ficha Lead (13 turnos) y su unico job en Gusto es cashier, a la misma tarifa $20.00"
+Gaslamp Quarter,Busser,12,Busser,exacto,,
+Gaslamp Quarter,(sin jobReference),9,,ninguno,CONFIRMAR,el turno no trae jobReference
+National City,Taquero,219,Taquero,exacto,,
+National City,Server,148,Server,exacto,,
+National City,Busser,119,busser,exacto,,
+National City,Dishwasher,71,dishwasher,exacto,,
+National City,Tortillera,68,preparadora de tortilla,seguro,,equivalencia conocida: Tortillera = preparadora de tortilla
+National City,Runner,68,runner,exacto,,
+National City,Bartender,65,bartender,exacto,,
+National City,Prep,54,Prep,exacto,,
+National City,Cashier,33,Host,ninguno,,"Fatima Miranda y Mara Vazquez Rosas son Host en Gusto, $16.90"
+National City,Host,29,Host,exacto,,
+National City,Assitant Manager Hourly,26,Host,ninguno,,"Jazmin Morales solo tiene Host en Gusto, a $23.00"
+National City,Expo,16,,ninguno,CONFIRMAR,"'Expo' no existe como job en Gusto. Crear el job alla, o decidir a que title mandar esas horas."
+National City,Shift Manager / Assistant Manager,10,Lead,ninguno,,Karina Pacheco tiene Lead en Gusto a $20.00
