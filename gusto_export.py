@@ -78,6 +78,55 @@ GUSTO_COLUMNS = [
 # cajon. Eso respalda que los de tarjeta van en el cheque. Si Toast Web dice
 # "Pay out from the cash drawer" en Employees > Shift review > Payout options,
 # cambiar esto a "cash_tips".
+# Los avisos se emiten con tipo y datos, no solo como frase. La UI tiene que
+# poder agrupar, contar y ofrecer un boton por caso, y para eso no puede leer de
+# vuelta mis propias oraciones: ese es el camino por el que el texto y el dato se
+# separan, que es exactamente como se perdieron 6.56 h de alguien (ver el aviso
+# de RETENIDO que se emitia mientras la fila se borraba). El texto se sigue
+# generando igual para quien lee la linea de comandos.
+#
+#   bloquea      el CSV saldria incorrecto; no se genera
+#   accion       hay una decision humana que cambia dinero u horas
+#   informativo  conviene saberlo, no cambia nada de lo que se paga
+NIVELES = ("bloquea", "accion", "informativo")
+
+# De cada tipo, en que seccion de la pantalla va y si pide una decision.
+GRUPOS_DE_AVISO = {
+    "semana_sin_confirmar":            "config",
+    "falta_template":                  "config",
+    "sucursal_sin_empresa_con_horas":  "sucursal",
+    "sucursal_sin_empresa_sin_horas":  "sucursal",
+    "retenido_sin_alta":               "alta_en_gusto",
+    "retenido_tips_sin_identidad":     "alta_en_gusto",
+    "confirmar_identidad":             "identidad",
+    "retenido_homonimo":               "identidad",
+    "tips_sin_dueno":                  "tips",
+    "tips_sin_ubicar":                 "tips",
+    "sin_tips_del_pool":               "tips",
+    "job_no_existe_en_gusto":          "jobs",
+    "job_sin_title_en_gusto":          "jobs",
+    "job_pagado_distinto":             "jobs",
+    "horas_sin_renglon":               "jobs",
+    "turnos_sin_job":                  "jobs",
+    "turno_sin_clock_out":             "turnos",
+    "turno_auto_cerrado":              "turnos",
+    "descansos_no_tomados":            "descansos",
+    "cuadre_horas":                    "cuadre",
+    "cuadre_tips":                     "cuadre",
+}
+
+TITULOS_DE_GRUPO = {
+    "cuadre":        "El cuadre no cierra",
+    "alta_en_gusto": "Gente que no entra al CSV",
+    "identidad":     "Identidades por confirmar",
+    "tips":          "Tips que no llegan a nadie",
+    "sucursal":      "Sucursales sin empresa de Gusto",
+    "turnos":        "Turnos con problemas de marcaje",
+    "jobs":          "Puestos que no coinciden entre Toast y Gusto",
+    "descansos":     "Descansos no tomados",
+    "config":        "Configuracion",
+}
+
 # Tolerancia del cierre de cuentas. Arriba de esto, el descuadre no se puede
 # achacar a redondeo y bloquea: un CSV incompleto que parece completo es
 # peor que no tener CSV.
@@ -221,9 +270,25 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     problems = []      # para el programa: descuadre sin atribuir
     revisar = []       # nombrado y cuantificado: lo decide la persona
     warnings = []      # informativo
+    avisos = []        # lo mismo, con tipo y datos, para que la UI agrupe
+
+    _listas = {"bloquea": problems, "accion": revisar, "informativo": warnings}
+
+    def avisar(nivel: str, tipo: str, texto: str, **datos):
+        """Registra un aviso una sola vez, como texto y como dato."""
+        assert nivel in NIVELES, nivel
+        assert tipo in GRUPOS_DE_AVISO, tipo
+        _listas[nivel].append(texto)
+        avisos.append({
+            "nivel": nivel,
+            "tipo": tipo,
+            "grupo": GRUPOS_DE_AVISO[tipo],
+            "texto": texto,
+            **datos,
+        })
     held_back = []
     if not ca_overtime.WORKWEEK_START_CONFIRMED:
-        revisar.append(
+        avisar("accion", "semana_sin_confirmar",
             "El inicio de la semana laboral no esta confirmado "
             f"(usando {('lun','mar','mie','jue','vie','sab','dom')[ca_overtime.WORKWEEK_START_WEEKDAY]}). "
             "Leelo en Gusto > Pay > Pay settings y ponlo en ca_overtime.py: "
@@ -249,7 +314,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 vivos = [e for e in huerfanas if not e.get("deleted")]
                 horas = sum(audit_time_entry(e)["payable_hours"] for e in vivos)
             except Exception as error:
-                revisar.append(
+                avisar("accion", "sucursal_sin_empresa_con_horas",
                     f"{location['toast_name']} no tiene empresa de Gusto y "
                     f"tampoco se pudieron leer sus turnos ({type(error).__name__}), "
                     f"asi que no se sabe si tiene horas sin pagar. Revisala a mano "
@@ -260,7 +325,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             # que medir solo las horas clasificaba como "no opera" a una
             # sucursal con gente fichada en ese momento.
             if vivos:
-                revisar.append(
+                avisar("accion", "sucursal_sin_empresa_con_horas",
                     f"{location['toast_name']} no tiene empresa de Gusto y "
                     f"tiene {len(vivos)} turno(s) en este periodo, "
                     f"{horas:.2f} h pagables. Esas horas no entran a ningun "
@@ -268,7 +333,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                     f"ademas trabaje en otra sucursal. Agregala a "
                     f"GUSTO_COMPANIES con su template, o se quedan sin pagar.")
             else:
-                warnings.append(
+                avisar("informativo", "sucursal_sin_empresa_sin_horas",
                     f"{location['toast_name']} existe en Toast sin empresa de "
                     f"Gusto, pero no tuvo turnos en este periodo. Hay que "
                     f"mapearla antes de que empiece a operar.")
@@ -438,7 +503,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             acumulado["turnos"] += 1
             acumulado["personas"].add(row["employee_guid"])
     for nombre_loc, datos in sorted(perdidos.items()):
-        revisar.append(
+        avisar("accion", "descansos_no_tomados",
             f"{nombre_loc}: {datos['turnos']} turno(s) de "
             f"{len(datos['personas'])} persona(s) arriba de 6 h donde Toast "
             f"reporta el descanso de comida como NO tomado. La prima ya va en el "
@@ -471,18 +536,18 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 premium_by_identity[pago] = premium_por_persona[persona]
 
     for (location, toast_job, identity), (name, title) in sorted(unmapped_routed.items()):
-        warnings.append(
+        avisar("informativo", "job_no_existe_en_gusto",
             f"{name}: su job '{toast_job}' de {location} no existe en Gusto, asi "
             f"que sus horas se pagaron como '{title}', su unico job alla.")
 
     for (location, identity), name in sorted(no_job_ref.items()):
-        warnings.append(
+        avisar("informativo", "turnos_sin_job",
             f"{name} ({location}) tiene turnos sin jobReference en Toast. Sus "
             f"horas se mandaron a su unico job de Gusto, pero conviene "
             f"arreglarlo en Toast para que fiche con job.")
 
     for (location, toast_job), people in sorted(unmapped_jobs.items()):
-        revisar.append(
+        avisar("accion", "job_sin_title_en_gusto",
             f"Job '{toast_job}' de {location} no tiene title en Gusto "
             f"({len(people)} persona(s): {', '.join(sorted(people)[:3])}"
             f"{'...' if len(people) > 3 else ''}). Crea el job en Gusto o "
@@ -527,12 +592,12 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             for bucket in ("regular", "overtime", "double"):
                 destination[bucket] += cell[bucket]
             del hours_by_cell[key]
-            warnings.append(
+            avisar("informativo", "job_pagado_distinto",
                 f"{who}: {total:.2f} h que Toast marca como '{title}' se pagaron "
                 f"como '{titles[0]}', que es su unico job en Gusto. Si la tarifa "
                 f"deberia ser distinta, hay que alinear el job en los dos sistemas.")
         else:
-            revisar.append(
+            avisar("accion", "horas_sin_renglon",
                 f"{who}: {total:.2f} h de '{title}' no tienen renglon en Gusto, y "
                 f"tiene varios jobs ({', '.join(titles)}) asi que no se adivina a "
                 f"cual van. Agrega ese job en Gusto o corrige el de Toast.")
@@ -625,7 +690,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             cell["gratuity"] += raw["gratuity"]
 
     for loc, who, job, amount in sorted(tips_unresolved, key=lambda x: -x[3]):
-        revisar.append(
+        avisar("accion", "tips_sin_ubicar",
             f"${amount:,.2f} de tips de '{who}' ({job}, {loc}) no se pudieron "
             f"ubicar en el template de Gusto. Sin resolverlo esos tips no se pagan.")
 
@@ -657,7 +722,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                      + celda.get("double", 0.0))
             if horas <= 0.005:
                 continue
-            revisar.append(
+            avisar("accion", "sin_tips_del_pool",
                 f"{location['short']}: alguien con {horas:.2f} h en '{titulo}' "
                 f"(id de Gusto {pago}) no recibio NADA del pool, mientras el "
                 f"resto de la sucursal si. Hay dos explicaciones y conviene "
@@ -674,7 +739,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         company = location["company"]
         template = load_template(location["template"])
         if not template:
-            revisar.append(
+            avisar("accion", "falta_template",
                 f"Falta el template de Gusto {location['template']}, asi que no "
                 f"se genera el CSV de esa empresa. El de la otra si sale.")
             continue
@@ -733,7 +798,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "motivo": "sin alta en Gusto o sin gusto_employee_id confirmado",
             "que_hacer": "dar de alta en Gusto y volver a correr, o capturar a mano",
         })
-        warnings.append(
+        avisar("accion", "retenido_sin_alta",
             f"RETENIDO: {name.strip()} con {hours:.2f} h no entra al CSV porque no "
             f"tiene alta en Gusto. Hay que pagarle aparte o darlo de alta y repetir.")
 
@@ -746,7 +811,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "motivo": "tiene tips en el reporte pero no se pudo resolver su identidad en Gusto",
             "que_hacer": "revisar si es un registro duplicado o de baja en Toast",
         })
-        warnings.append(
+        avisar("accion", "retenido_tips_sin_identidad",
             f"RETENIDO: ${amount:,.2f} de tips de {who.strip()} no entran al CSV "
             f"porque no se resolvio su identidad en Gusto.")
 
@@ -771,17 +836,17 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             auto_cerrados.append((quien, row["business_date"], row["location"]))
 
     for quien, dia, loc in sorted(abiertos):
-        revisar.append(
+        avisar("accion", "turno_sin_clock_out",
             f"{quien} tiene un turno SIN clock-out el {dia} en {loc}. Sus horas "
             f"de ese dia valen 0 y no cuentan para las 40 semanales. Hay que "
             f"cerrarlo en Toast antes de generar el CSV.")
     for quien, dia, loc in sorted(auto_cerrados):
-        warnings.append(
+        avisar("informativo", "turno_auto_cerrado",
             f"{quien}: el turno del {dia} en {loc} lo cerro Toast automaticamente, "
             f"no la persona. Las horas pueden no reflejar lo que trabajo.")
 
     for clave, nombre in sorted(sin_confirmar.items()):
-        revisar.append(
+        avisar("accion", "confirmar_identidad",
             f"{nombre} tiene registros en las DOS empresas de Gusto. Sus horas NO "
             f"se estan sumando para el overtime de California, que es lo que pasa "
             f"hoy sin la herramienta. Si deben sumarse (joint employer), pon 'si' "
@@ -810,14 +875,14 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "que_hacer": "revisar en Tips Manager a quien le corresponden; en "
                          "California los tips son propiedad de los empleados",
         })
-        revisar.append(
+        avisar("accion", "tips_sin_dueno",
             f"${monto:,.2f} de tips quedaron en la cuenta '{quien}', que no es una "
             f"persona, asi que no llegan a nadie. Decidir en Tips Manager a quien "
             f"corresponden; en California los tips son propiedad de los empleados.")
 
     gap = tips_reported_total - placed - sum(tips_held.values()) - sum(tips_no_persona.values())
     if abs(gap) > TOLERANCIA_TIPS:
-        problems.append(
+        avisar("bloquea", "cuadre_tips",
             f"Cierre de tips: el reporte trae ${tips_reported_total:,.2f}, se "
             f"ubicaron ${placed:,.2f} y ${sum(tips_held.values()):,.2f} quedaron "
             f"retenidos. Faltan ${gap:,.2f} sin explicar; no subir hasta cuadrarlo.")
@@ -869,7 +934,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 f"Toast, estas horas son ADICIONALES y tambien se le deben; si "
                 f"son dos personas distintas, no hay relacion. Confirmalo antes "
                 f"de pagar para no pagar de mas ni de menos.")
-            revisar.append(
+            avisar("accion", "retenido_homonimo",
                 f"{h['nombre']} queda retenido con {h['horas']:.2f} h y "
                 f"${h['tips']:,.2f}, y su nombre se parece a '{parecido}', que si "
                 f"entra al CSV. Revisa si es la misma persona con dos registros "
@@ -879,7 +944,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     hours_held = sum(h["horas"] for h in held_back)
     hueco_horas = hours_reported - hours_placed - hours_held
     if abs(hueco_horas) > TOLERANCIA_HORAS:
-        problems.append(
+        avisar("bloquea", "cuadre_horas",
             f"Cierre de HORAS: entraron {hours_reported:.2f} h, salieron "
             f"{hours_placed:.2f} h al CSV y {hours_held:.2f} h a retenidos. "
             f"Faltan {hueco_horas:.2f} h sin explicar; no subir hasta cuadrarlo.")
@@ -938,6 +1003,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             # hueco fantasma del tamano de esas cuentas.
             "tips_no_persona": tips_no_persona,
             "warnings": sorted(set(warnings)), "held_back": held_back,
+            "avisos": avisos,
             "diagnostico": diagnostico}
 
 
