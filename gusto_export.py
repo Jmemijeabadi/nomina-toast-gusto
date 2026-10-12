@@ -824,10 +824,25 @@ def build(client: ToastClient, start: date, end_inclusive: date,
 
     hours_placed = sum(c["regular"] + c["overtime"] + c["double"]
                        for c in hours_by_cell.values())
-    # Limpieza de la lista de retenidos, ahora que ya se sabe quien cobro:
-    #   - fuera quien no tiene ni horas ni tips (ruido que devalua la lista)
-    #   - fuera quien ya aparece pagado en el CSV, porque pedirle al operador que
-    #     le pague a mano seria pago doble
+    # Limpieza de la lista de retenidos: fuera quien no tiene ni horas ni tips,
+    # que es ruido y devalua la lista. Y NADA MAS.
+    #
+    # Aqui habia un segundo filtro que sacaba a quien "ya aparecia pagado en el
+    # CSV", comparando nombres: si 2 palabras de mas de 2 letras coincidian con
+    # alguien ya pagado, se borraba. Con nombres españoles eso es demasiado
+    # flojo. Medido en el periodo 2026-09-19/10-02: "Madriles, Abraham Isaac"
+    # comparte {madriles, abraham} con "Madriles Gonzalez, Abraham", que es OTRA
+    # persona y en OTRA empresa, y por eso sus 6.56 h desaparecieron del cuadre
+    # — dejando un hueco sin explicar que bloqueo la nomina, con su aviso ya
+    # emitido unas lineas antes. El guardarraíl lo atrapo; el filtro lo causo.
+    #
+    # Y el filtro estaba mal en los dos casos posibles, no solo en el de los
+    # homonimos: si de verdad fuera la misma persona con dos registros en Toast,
+    # las horas del registro SIN mapear siguen sin pagarse, asi que borrarlas
+    # tambien seria perder dinero. Nunca es correcto borrar.
+    #
+    # Si hay riesgo de pago doble, se dice y lo decide quien opera. La identidad
+    # se resuelve con gusto_employee_id y person_key, no adivinando con nombres.
     pagados = {
         (f["last_name"] + " " + f["first_name"]).strip().lower()
         for filas in output.values() for f in filas
@@ -835,14 +850,31 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                                           "double_overtime_hours"))
     }
 
-    def ya_cobro(nombre: str) -> bool:
+    def se_parece_a_alguien_pagado(nombre: str) -> str:
+        """Nombre de alguien ya pagado que comparte 2+ palabras, si lo hay."""
         partes = {t for t in norm(nombre).replace(",", " ").split() if len(t) > 2}
-        return any(len(partes & {t for t in norm(p).split() if len(t) > 2}) >= 2
-                   for p in pagados)
+        for pagado in sorted(pagados):
+            if len(partes & {t for t in norm(pagado).split() if len(t) > 2}) >= 2:
+                return pagado
+        return ""
 
     held_back[:] = [h for h in held_back
-                    if (h["horas"] > 0.005 or h["tips"] > 0.005)
-                    and not ya_cobro(h["nombre"])]
+                    if h["horas"] > 0.005 or h["tips"] > 0.005]
+    for h in held_back:
+        parecido = se_parece_a_alguien_pagado(h["nombre"])
+        if parecido:
+            h["que_hacer"] = (
+                f"{h['que_hacer']}. OJO: el nombre se parece a '{parecido}', que "
+                f"SI va en el CSV. Si son la misma persona con dos registros en "
+                f"Toast, estas horas son ADICIONALES y tambien se le deben; si "
+                f"son dos personas distintas, no hay relacion. Confirmalo antes "
+                f"de pagar para no pagar de mas ni de menos.")
+            revisar.append(
+                f"{h['nombre']} queda retenido con {h['horas']:.2f} h y "
+                f"${h['tips']:,.2f}, y su nombre se parece a '{parecido}', que si "
+                f"entra al CSV. Revisa si es la misma persona con dos registros "
+                f"en Toast o si son dos personas: de eso depende cuanto se le "
+                f"paga a cada una.")
 
     hours_held = sum(h["horas"] for h in held_back)
     hueco_horas = hours_reported - hours_placed - hours_held

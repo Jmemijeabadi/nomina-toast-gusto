@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
 import unittest
 import urllib.error
 import urllib.request
@@ -257,6 +258,44 @@ class TestReconciliacion(unittest.TestCase):
         self.assertGreater(medidas, 0,
                            f"ninguna location reporto horas en {inicio} a {fin}: "
                            f"el test no probo nada, revisa credenciales o periodo")
+
+    def test_nadie_se_cae_de_la_lista_de_retenidos(self):
+        """Si se avisa que alguien queda retenido, tiene que estar en la lista.
+
+        Un filtro comparaba nombres y borraba de `held_back` a quien "ya parecia
+        pagado": "Madriles, Abraham Isaac" comparte dos palabras con "Madriles
+        Gonzalez, Abraham", que es otra persona, y sus 6.56 h se evaporaron del
+        cuadre. El aviso ya estaba emitido, asi que el nombre se veia en pantalla
+        mientras sus horas no estaban en ningun lado. Esta es la invariante que
+        eso rompia.
+        """
+        inicio, fin, _ = toast_payroll.previous_closed_pay_period()
+        resultado = gusto_export.build(self.client, inicio, fin, {})
+
+        avisados = set()
+        for aviso in resultado["warnings"]:
+            m = re.match(r"RETENIDO: (.+?) con [\d.,]+ h no entra al CSV", aviso)
+            if m:
+                avisados.add(m.group(1).strip())
+        listados = {h["nombre"].strip() for h in resultado["held_back"]}
+
+        faltantes = sorted(avisados - listados)
+        self.assertEqual(
+            faltantes, [],
+            f"se aviso que quedaban retenidos pero no estan en la lista, asi que "
+            f"sus horas no cuentan en el cuadre: {faltantes}")
+
+    def test_el_cuadre_de_horas_cierra_sin_hueco(self):
+        """entro == al CSV + retenido. Si no, hay horas que no estan en ningun lado."""
+        inicio, fin, _ = toast_payroll.previous_closed_pay_period()
+        resultado = gusto_export.build(self.client, inicio, fin, {})
+        hueco = (resultado["hours_reported"] - resultado["hours_placed"]
+                 - resultado["hours_held"])
+        self.assertLessEqual(
+            abs(hueco), gusto_export.TOLERANCIA_HORAS,
+            f"{hueco:+.2f} h sin explicar en {inicio} a {fin}: entraron "
+            f"{resultado['hours_reported']:.2f}, al CSV {resultado['hours_placed']:.2f}, "
+            f"retenidas {resultado['hours_held']:.2f}")
 
     def test_las_horas_de_un_periodo_cerrado_cuadran_con_el_csv(self):
         inicio, fin, _ = toast_payroll.previous_closed_pay_period()
