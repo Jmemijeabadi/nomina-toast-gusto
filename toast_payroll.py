@@ -83,6 +83,10 @@ NON_PERSON_MARKERS = ("kds", "login", "for all devices", "training",
 # El primer meal se debe a partir de mas de 5 h y se puede renunciar por
 # consentimiento mutuo solo si la jornada no pasa de 6 h.
 FIRST_MEAL_TRIGGER_HOURS = 5.0
+# Labor Code 512(a): el meal se debe arriba de 5 h trabajadas. Las 6 h son
+# hasta donde se puede renunciar a el por consentimiento mutuo, no el
+# disparador. Confundirlos dejaba la banda de 5 a 6 h sin auditar.
+FIRST_MEAL_TRIGGER_HOURS = 5.0
 FIRST_MEAL_WAIVER_CEILING_HOURS = 6.0
 MEAL_DEADLINE_HOURS = 5.0
 
@@ -644,7 +648,19 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
     # 267. Eso NO es un marcaje incompleto, es Toast diciendo que no se descanso.
     violations = []
     if start and end:
-        if work_period > FIRST_MEAL_WAIVER_CEILING_HOURS:
+        # El primer meal se debe arriba de 5 h, no de 6: el Labor Code 512(a)
+        # dice "more than five hours", y las 6 h son el TECHO hasta donde se
+        # puede RENUNCIAR a el, y solo por consentimiento mutuo documentado.
+        # Usar el techo como disparador dejaba sin auditar toda la banda de 5 a
+        # 6 h. Medido el 2026-10-12 en los dos periodos cerrados: 158 y 151
+        # turnos sin descanso en esa banda, de 53 y 54 personas. Eso era prima
+        # que no se pagaba. El segundo meal ya estaba bien asi; el primero no.
+        first_meal_owed = work_period > FIRST_MEAL_TRIGGER_HOURS
+        if first_meal_owed and MEAL_WAIVERS_DOCUMENTED:
+            if work_period <= FIRST_MEAL_WAIVER_CEILING_HOURS:
+                first_meal_owed = False
+
+        if first_meal_owed:
             if not meals:
                 violations.append("Missed Meal Break")
             elif meals[0] > add_work_hours(start, MEAL_DEADLINE_HOURS):

@@ -625,5 +625,73 @@ class TestMapeoNoSePierde(unittest.TestCase):
                                         "sistema volveria a aparecer cada corrida")
 
 
+class TestDisparadorDelMeal(unittest.TestCase):
+    """El primer meal se debe arriba de 5 h, no de 6.
+
+    Labor Code 512(a): se debe cuando el work period pasa de cinco horas. Las
+    seis horas son el TECHO hasta donde se puede renunciar a el, y solo por
+    consentimiento mutuo documentado. El codigo usaba el techo como disparador,
+    asi que la banda de 5 a 6 h nunca se auditaba: medido en los dos periodos
+    cerrados, 158 y 151 turnos sin descanso de 53 y 54 personas, que son 152 y
+    142 h de prima que no se pagaban.
+    """
+
+    @staticmethod
+    def _turno(horas, con_meal=False):
+        """Un turno de N horas, con o sin un meal de 32 min bien tomado."""
+        inicio = "2026-09-10T16:00:00.000+0000"
+        fin_h = 16 + int(horas)
+        fin_m = int(round((horas % 1) * 60))
+        fin = f"2026-09-10T{fin_h:02d}:{fin_m:02d}:00.000+0000"
+        breaks = []
+        if con_meal:
+            breaks = [{
+                "guid": "b1",
+                "breakType": {"guid": sorted(toast_payroll.MEAL_BREAK_TYPE_GUIDS)[0]},
+                # arranca a las 4 h, antes del fin de la quinta hora
+                "inDate": "2026-09-10T20:00:00.000+0000",
+                "outDate": "2026-09-10T20:32:00.000+0000",
+                "paid": False, "missed": False, "waived": False, "deleted": False,
+            }]
+        return {
+            "guid": "t1", "businessDate": 20260910, "deleted": False,
+            "inDate": inicio, "outDate": fin,
+            "regularHours": horas, "overtimeHours": 0.0,
+            "hourlyWage": 18.0, "breaks": breaks,
+            "employeeReference": {"guid": "e1"},
+            "jobReference": {"guid": "j1"},
+        }
+
+    def test_cinco_horas_y_media_sin_descanso_es_violacion(self):
+        """La banda que no se auditaba. Sin waiver documentado, la prima se debe."""
+        self.assertFalse(toast_payroll.MEAL_WAIVERS_DOCUMENTED,
+                         "si se documentan waivers hay que revisar este test")
+        a = toast_payroll.audit_time_entry(self._turno(5.5))
+        self.assertAlmostEqual(a["work_period_hours"], 5.5, places=2)
+        self.assertIn("Missed Meal Break", a["violations"],
+                      "un turno de 5.5 h sin descanso debe prima: el disparador "
+                      "es 5 h, no 6")
+
+    def test_exactamente_cinco_horas_no_es_violacion(self):
+        """'More than five hours': a las 5 justas todavia no se debe."""
+        a = toast_payroll.audit_time_entry(self._turno(5.0))
+        self.assertEqual(a["violations"], [])
+
+    def test_seis_horas_y_media_sin_descanso_sigue_siendo_violacion(self):
+        a = toast_payroll.audit_time_entry(self._turno(6.5))
+        self.assertIn("Missed Meal Break", a["violations"])
+
+    def test_con_descanso_a_tiempo_no_hay_violacion(self):
+        a = toast_payroll.audit_time_entry(self._turno(5.5, con_meal=True))
+        self.assertEqual(a["violations"], [])
+
+    def test_el_techo_del_waiver_sigue_siendo_seis(self):
+        """El techo no se toco: sigue separado del disparador."""
+        self.assertEqual(toast_payroll.FIRST_MEAL_TRIGGER_HOURS, 5.0)
+        self.assertEqual(toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS, 6.0)
+        self.assertLess(toast_payroll.FIRST_MEAL_TRIGGER_HOURS,
+                        toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
