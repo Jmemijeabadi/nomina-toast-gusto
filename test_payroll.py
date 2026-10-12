@@ -25,6 +25,7 @@ import urllib.error
 import urllib.request
 from datetime import date
 
+import build_maps
 import ca_overtime
 import gusto_export
 import toast_payroll
@@ -553,6 +554,75 @@ class TestNombresDefinidos(unittest.TestCase):
 
         self.assertEqual(encontrados, [], "nombres sin definir:\n  " +
                          "\n  ".join(encontrados))
+
+
+class TestMapeoNoSePierde(unittest.TestCase):
+    """Una confirmacion humana no puede ser perecedera.
+
+    build_maps genera filas solo para quien TRABAJO en la ventana consultada, y
+    al reescribir el archivo se perdia la fila de quien no aparecia. Medido:
+    'Lopez, Eduardo' estaba activo en Toast con 13.54 h un periodo y 0.00 el
+    siguiente, y su gusto_employee_id confirmado se borro solo. Al volver a
+    trabajar sus horas se habrian ido a retenidos.
+    """
+
+    def _archivo(self, filas):
+        import tempfile
+        fd, ruta = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        with open(ruta, "w", newline="", encoding="utf-8") as h:
+            w = csv.DictWriter(h, fieldnames=build_maps.EMPLOYEE_MAP_COLUMNS,
+                               extrasaction="ignore")
+            w.writeheader()
+            for f in filas:
+                w.writerow({c: f.get(c, "") for c in build_maps.EMPLOYEE_MAP_COLUMNS})
+        self.addCleanup(lambda: os.path.exists(ruta) and os.unlink(ruta))
+        return ruta
+
+    def test_conserva_a_quien_no_trabajo_en_la_ventana(self):
+        ruta = self._archivo([
+            {"toast_guid": "g-trabajo", "toast_name": "Ejemplo, Uno",
+             "gusto_employee_id": "aaa111"},
+            {"toast_guid": "g-descanso", "toast_name": "Ejemplo, Dos",
+             "gusto_employee_id": "bbb222"},
+        ])
+        # esta corrida solo propone al que trabajo
+        filas = [{"toast_guid": "g-trabajo", "toast_name": "Ejemplo, Uno",
+                  "gusto_employee_id": "", "accion": "CONFIRMAR"}]
+
+        build_maps.merge_existing(ruta, filas, "toast_guid",
+                                  ("gusto_employee_id", "gusto_name", "accion"),
+                                  compare_field="toast_name")
+
+        por_guid = {f["toast_guid"]: f for f in filas}
+        self.assertIn("g-descanso", por_guid,
+                      "se perdio la fila de quien no trabajo: su mapeo confirmado "
+                      "desaparece y sus horas se iran a retenidos")
+        self.assertEqual(por_guid["g-descanso"]["gusto_employee_id"], "bbb222")
+        self.assertEqual(por_guid["g-trabajo"]["gusto_employee_id"], "aaa111")
+
+    def test_no_revive_una_fila_sin_resolver(self):
+        """Lo que nunca se confirmo no se arrastra: seria ruido permanente."""
+        ruta = self._archivo([
+            {"toast_guid": "g-pendiente", "toast_name": "Ejemplo, Tres",
+             "gusto_employee_id": "", "accion": "CONFIRMAR"},
+        ])
+        filas = []
+        build_maps.merge_existing(ruta, filas, "toast_guid",
+                                  ("gusto_employee_id", "gusto_name", "accion"))
+        self.assertEqual(filas, [], "arrastro una fila que nadie confirmo")
+
+    def test_conserva_un_excluir(self):
+        """Marcar algo como no-persona tambien es una decision humana."""
+        ruta = self._archivo([
+            {"toast_guid": "g-kds", "toast_name": "Sistema, Cuenta",
+             "gusto_employee_id": "", "accion": "EXCLUIR"},
+        ])
+        filas = []
+        build_maps.merge_existing(ruta, filas, "toast_guid",
+                                  ("gusto_employee_id", "gusto_name", "accion"))
+        self.assertEqual(len(filas), 1, "se perdio un EXCLUIR y la cuenta de "
+                                        "sistema volveria a aparecer cada corrida")
 
 
 if __name__ == "__main__":

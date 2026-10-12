@@ -369,6 +369,33 @@ def merge_existing(path: str, rows: list, key_fields, carry_fields,
                 if field in old_row:
                     row[field] = old_row[field]
             kept += 1
+
+    # Las filas que ya estaban resueltas y que esta corrida NO volvio a
+    # proponer. Pasa porque las filas se generan solo para quien TRABAJO en la
+    # ventana consultada: quien se toma un periodo libre desaparece, y al
+    # reescribir el archivo su confirmacion se perdia. Medido el 2026-10-12:
+    # 'Lopez, Eduardo' estaba activo en Toast con 13.54 h el periodo anterior y
+    # 0.00 h en el nuevo, y su mapeo confirmado (gusto_employee_id) se borro
+    # solo. Cuando volviera a trabajar sus horas se habrian ido a retenidos
+    # hasta que alguien lo reconfirmara: una confirmacion humana no puede ser
+    # perecedera. Se conservan, marcadas, porque no cuestan nada y perderlas
+    # cuesta salarios.
+    vistos = {key_of(row) for row in rows}
+    for clave, old_row in previous.items():
+        if clave in vistos:
+            continue
+        resolved = (old_row.get(carry_fields[0]) or "").strip()
+        action = (old_row.get("accion") or "").strip().upper()
+        if not (resolved or action == "EXCLUIR"):
+            continue
+        revivida = dict(old_row)
+        if action != "EXCLUIR":
+            revivida["nota"] = (
+                "sin turnos en la ventana consultada; el mapeo se conserva para "
+                "cuando vuelva a trabajar")
+        rows.append(revivida)
+        kept += 1
+
     return kept
 
 
