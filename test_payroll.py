@@ -872,6 +872,35 @@ class TestNadaSePierdeEnRetenidos(unittest.TestCase):
         self.assertEqual(avisos_con_horas, [],
                          "un aviso de RETENIDO con 0.00 h significa que las "
                          "horas se perdieron antes de contarse")
+    def test_el_overtime_no_se_mete_en_las_celdas_que_sobreviven(self):
+        """El split de regular/OT/DT es de la jornada COMPLETA. Prorratearlo
+        sobre las celdas que sobreviven metia el OT de las horas descartadas en
+        las que si quedaron: una jornada de 12 h salia como 12 h en una celda de
+        4, y las 8 descartadas ademas iban a retenidos. Daba cuadre NEGATIVO,
+        que es como se delato en el periodo 2026-07-25/08-07 (-3.92 h)."""
+        # Taquero SI esta mapeado; PuestoNuevo no.
+        self.esc.jobs_sin_mapear = {"PuestoNuevo"}
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Hilda",
+                                  gusto_id="www666")
+        # dos puestos en Gusto, para que el job sin mapear no se pueda adivinar
+        self.esc.renglon_de_gusto("Gaslamp Quarter", "Ejemplo", "Hilda",
+                                  "www666", job="Lead")
+        # el mismo dia: 4 h en un puesto que SI tiene renglon y 8 en uno que no
+        self.esc.turno(quien, "2026-09-07", horas=4.0, job="Taquero")
+        self.esc.turno(quien, "2026-09-07", horas=8.0, job="PuestoNuevo")
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        self.assertAlmostEqual(
+            toast_falso.hueco_de_horas(r), 0.0, places=2,
+            msg="cuadre negativo: el OT de las horas descartadas se metio en "
+                "las celdas que sobrevivieron")
+        self.assertLessEqual(
+            toast_falso.horas_escritas(r), 4.01,
+            msg="el CSV no puede llevar mas de las 4 h cuyo puesto si tiene "
+                "renglon; lo demas va a retenidos")
+        self.assertAlmostEqual(r["hours_held"], 8.0, places=2)
+
 
 
 

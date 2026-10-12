@@ -450,6 +450,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     premium_by_identity = defaultdict(float)
     day_jobs = defaultdict(lambda: defaultdict(float))
     horas_sin_destino = defaultdict(float)
+    horas_descartadas = defaultdict(float)
     motivo_sin_destino = {}
     for row in audited:
         if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
@@ -478,6 +479,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 # cuenta — ni al CSV, ni a retenidos, ni al hueco — y el aviso
                 # de la persona salia diciendo "con 0.00 h".
                 horas_sin_destino[row["employee_guid"]] += row["payable_hours"]
+                horas_descartadas[(identity, row["business_date"])] += row["payable_hours"]
                 motivo_sin_destino[row["employee_guid"]] = (
                     f"ficho sin elegir job en Toast y tiene "
                     f"{len(titles)} puestos en Gusto, asi que no se sabe a cual van")
@@ -493,6 +495,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             else:
                 unmapped_jobs[(location, toast_job)].add(employee.get("display", "?"))
                 horas_sin_destino[row["employee_guid"]] += row["payable_hours"]
+                horas_descartadas[(identity, row["business_date"])] += row["payable_hours"]
                 motivo_sin_destino[row["employee_guid"]] = (
                     f"trabajo '{toast_job}' en {location}, ese job no esta en "
                     f"job_map.csv y su id de Gusto ({pago}) tiene "
@@ -511,8 +514,18 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         total = sum(cells.values())
         if total <= 0:
             continue
+        # El split (regular/OT/DT) es el de la jornada COMPLETA, asi que la
+        # proporcion tiene que medirse contra la jornada completa — no contra
+        # las celdas que sobrevivieron. Prorratear sobre los sobrevivientes
+        # metia el OT de las horas descartadas en las celdas que si quedaron:
+        # 12 h de jornada acababan como 12 h en una celda de 4, y las 8
+        # descartadas ademas iban a retenidos. De ahi salia un cuadre NEGATIVO,
+        # que es lo que delato el bug en el periodo 2026-07-25/08-07 (-3.92 h).
+        total_jornada = total + horas_descartadas.get((identity, business_date), 0.0)
+        if total_jornada <= 0:
+            continue
         for cell, hours in cells.items():
-            share = hours / total
+            share = hours / total_jornada
             target = hours_by_cell[cell]      # (id_de_pago, empresa, title)
             target["regular"] += split["regular"] * share
             target["overtime"] += split["overtime"] * share

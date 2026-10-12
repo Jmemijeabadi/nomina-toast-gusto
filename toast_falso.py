@@ -83,6 +83,10 @@ class Escenario:
         # Si los jobs de Toast se mapean a un title igual. Con False el
         # escenario toma el camino de "job sin mapeo", que es otro bug.
         self.mapear_jobs = True
+        # Jobs que NO entran al job_map, para escenarios donde unos
+        # puestos estan mapeados y otros no — que es el caso real cuando
+        # alguien abre un puesto nuevo en Toast.
+        self.jobs_sin_mapear = set()
         self._dir = tempfile.mkdtemp(prefix="toast_falso_")
 
     # ── armar el escenario ──
@@ -197,6 +201,8 @@ class Escenario:
             if self.mapear_jobs:
                 for sucursal in GUIDS:
                     for job in self._jobs_vistos:
+                        if job in self.jobs_sin_mapear:
+                            continue
                         w.writerow({"toast_location": sucursal, "toast_job": job,
                                     "gusto_title": job, "confianza": "exacto"})
         return ruta_mapa
