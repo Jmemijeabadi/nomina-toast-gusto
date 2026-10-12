@@ -693,5 +693,61 @@ class TestDisparadorDelMeal(unittest.TestCase):
                         toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS)
 
 
+class TestNoHayPagoDoble(unittest.TestCase):
+    """Nadie puede estar en el CSV y en la lista de 'pagale aparte' a la vez.
+
+    Una fila con accion=CONFIRMAR que SI traia gusto_employee_id se pagaba en el
+    CSV y al mismo tiempo generaba el aviso 'RETENIDO ... no entra al CSV, hay
+    que pagarle aparte'. Quien obedece el aviso paga dos veces. Y pagar con un
+    mapeo que nadie confirmo es como el salario de una persona acaba en la
+    cuenta de otra. Se llega a ese estado por la rama de merge_existing que
+    detecta un cambio de nombre en Toast: pone CONFIRMAR sin limpiar el id.
+    """
+
+    def _mapa(self, filas):
+        import tempfile
+        fd, ruta = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        columnas = ["toast_guid", "toast_location", "toast_name",
+                    "gusto_employee_id", "accion"]
+        with open(ruta, "w", newline="", encoding="utf-8") as h:
+            w = csv.DictWriter(h, fieldnames=columnas, extrasaction="ignore")
+            w.writeheader()
+            for f in filas:
+                w.writerow({c: f.get(c, "") for c in columnas})
+        self.addCleanup(lambda: os.path.exists(ruta) and os.unlink(ruta))
+        return ruta
+
+    def test_un_id_sin_confirmar_no_se_usa_para_pagar(self):
+        ruta = self._mapa([{
+            "toast_guid": "g1", "toast_location": "X", "toast_name": "Ejemplo, Uno",
+            "gusto_employee_id": "aaa111", "accion": "CONFIRMAR"}])
+        mapa = toast_payroll.load_employee_map(ruta)
+        self.assertEqual(
+            mapa["g1"]["gusto_employee_id"], "",
+            "un id con accion=CONFIRMAR no debe servir para pagar: sus horas "
+            "entrarian al CSV y a la vez se avisaria que se le pague aparte")
+        self.assertTrue(mapa["g1"]["pendiente"])
+        self.assertEqual(mapa["g1"]["gusto_employee_id_propuesto"], "aaa111",
+                         "la propuesta se conserva para poder ofrecerla con un boton")
+
+    def test_un_id_confirmado_si_se_usa(self):
+        ruta = self._mapa([{
+            "toast_guid": "g2", "toast_location": "X", "toast_name": "Ejemplo, Dos",
+            "gusto_employee_id": "bbb222", "accion": ""}])
+        mapa = toast_payroll.load_employee_map(ruta)
+        self.assertEqual(mapa["g2"]["gusto_employee_id"], "bbb222")
+        self.assertFalse(mapa["g2"]["pendiente"])
+
+    def test_un_excluir_no_queda_pendiente(self):
+        ruta = self._mapa([{
+            "toast_guid": "g3", "toast_location": "X", "toast_name": "Sistema, Cuenta",
+            "gusto_employee_id": "", "accion": "EXCLUIR"}])
+        mapa = toast_payroll.load_employee_map(ruta)
+        self.assertTrue(mapa["g3"]["excluir"])
+        self.assertFalse(mapa["g3"]["pendiente"],
+                         "un EXCLUIR no debe salir como pendiente de confirmar")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

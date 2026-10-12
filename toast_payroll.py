@@ -462,7 +462,16 @@ def load_employee_map(path: str = "") -> dict:
             action = (row.get("accion") or "").strip().upper()
             employee_id = (row.get("gusto_employee_id") or "").strip()
             overrides[guid] = {
-                "gusto_employee_id": employee_id,
+                # CONFIRMAR significa que ningun humano ha validado este mapeo.
+                # Un id PROPUESTO pero sin confirmar no se usa para pagar: si se
+                # usara, las horas entrarian al CSV mientras el mismo export
+                # avisa "RETENIDO ... hay que pagarle aparte", y quien obedece el
+                # aviso paga dos veces. Y peor: pagar con un mapeo que nadie
+                # confirmo es justo como el salario de una persona termina en la
+                # cuenta de otra. El id propuesto se conserva aparte para que la
+                # pantalla lo pueda ofrecer con un boton.
+                "gusto_employee_id": "" if action == "CONFIRMAR" else employee_id,
+                "gusto_employee_id_propuesto": employee_id if action == "CONFIRMAR" else "",
                 "person_key": (row.get("person_key") or "").strip(),
                 "persona_confirmada": (row.get("persona_confirmada") or "").strip(),
                 "gusto_name": (row.get("gusto_name") or "").strip(),
