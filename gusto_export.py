@@ -391,6 +391,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 "first_name_legal": (employee.get("firstName") or "").strip(),
                 "chosen_name_only": (employee.get("chosenName") or "").strip(),
                 "location_guid": location["guid"],
+                "location": location["short"],
                 "deleted": bool(employee.get("deleted")),
             }
 
@@ -446,6 +447,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     hours_by_cell = defaultdict(lambda: {"regular": 0.0, "overtime": 0.0, "double": 0.0})
     premium_by_identity = defaultdict(float)
     day_jobs = defaultdict(lambda: defaultdict(float))
+    horas_sin_destino = defaultdict(float)
+    motivo_sin_destino = {}
     for row in audited:
         if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
             continue
@@ -468,6 +471,14 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             else:
                 unmapped_jobs[(location, "(sin jobReference)")].add(
                     employee.get("display", "?"))
+                # Las horas NO se tiran: se anotan para que lleguen al cuadre y
+                # a retenidos. Antes este continue las dejaba fuera de toda
+                # cuenta — ni al CSV, ni a retenidos, ni al hueco — y el aviso
+                # de la persona salia diciendo "con 0.00 h".
+                horas_sin_destino[row["employee_guid"]] += row["payable_hours"]
+                motivo_sin_destino[row["employee_guid"]] = (
+                    f"ficho sin elegir job en Toast y tiene "
+                    f"{len(titles)} puestos en Gusto, asi que no se sabe a cual van")
                 continue
         if not gusto_title:
             # Job sin mapeo: mismo criterio que arriba. Si en Gusto tiene un
@@ -479,6 +490,11 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                     employee.get("display", "?"), titles[0])
             else:
                 unmapped_jobs[(location, toast_job)].add(employee.get("display", "?"))
+                horas_sin_destino[row["employee_guid"]] += row["payable_hours"]
+                motivo_sin_destino[row["employee_guid"]] = (
+                    f"trabajo '{toast_job}' en {location}, ese job no esta en "
+                    f"job_map.csv y su id de Gusto ({pago}) tiene "
+                    f"{len(titles)} puestos en el template")
                 continue
         # La llave del dia lleva la PERSONA (para medir su jornada completa) y
         # la celda lleva el id de PAGO (para que ninguna fila cruce empresas).
@@ -651,10 +667,14 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         r["employee_guid"] for r in audited
         if start <= ca_overtime.parse_business_date(r["business_date"]) <= end_inclusive
     }
-    pending = sorted({
-        employees[g]["display"] for g in guids_en_periodo
-        if g in employees and employees[g]["pendiente"] and not employees[g]["excluir"]
-    })
+    # Por GUID, no por nombre de pantalla: una persona puede tener un registro
+    # de Toast por sucursal, y los dos se llaman igual. Siendo un set de
+    # nombres, los dos colapsaban en una sola entrada y las horas del segundo
+    # desaparecian del cuadre y de la lista con la que se paga a mano.
+    pending_guids = sorted(
+        (g for g in guids_en_periodo
+         if g in employees and employees[g]["pendiente"] and not employees[g]["excluir"]),
+        key=lambda g: (employees[g]["display"], employees[g]["location"]))
     # Paso 5b: resolver los tips del reporte a (empresa, empleado, title).
     #
     # El reporte trae el nombre LEGAL de Toast (con el apellido compuesto escrito
@@ -825,23 +845,100 @@ def build(client: ToastClient, start: date, end_inclusive: date,
 
         output[company] = rows
 
-    hours_by_name = {}
-    for guid, employee in employees.items():
-        identity = f"SIN-MAPEO::{guid}"
-        if identity in unmapped_hours:
-            hours_by_name[employee["display"]] = unmapped_hours[identity]
-    for name in pending:
-        hours = hours_by_name.get(name, 0.0)
+    # unmapped_hours viene con DOS formas de llave y antes solo se leia una:
+    #   SIN-MAPEO::{guid}   la persona no tiene identidad en Gusto
+    #   {gusto_employee_id} la tiene, pero ese id no aparece en el template
+    # Las del segundo tipo no las leia nadie: se borraban del CSV, no entraban a
+    # retenidos y NINGUN aviso las nombraba. Pasa con quien sigue fichando en
+    # Toast despues de salir de Gusto, o con un template desactualizado.
+    horas_por_guid = defaultdict(float)
+    horas_sin_template = defaultdict(float)
+    for identity, horas in unmapped_hours.items():
+        if identity.startswith("SIN-MAPEO::"):
+            horas_por_guid[identity.split("::", 1)[1]] += horas
+        else:
+            horas_sin_template[identity] += horas
+    # Y las que nunca llegaron a una celda porque su job no tenia destino.
+    for guid, horas in horas_sin_destino.items():
+        horas_por_guid[guid] += horas
+
+    # Los tips se llavean por nombre de pantalla, asi que si dos registros
+    # comparten nombre hay que atribuirlos UNA vez para no contarlos doble.
+    tips_ya_atribuidos = set()
+
+    def tips_de(display: str) -> float:
+        if display in tips_ya_atribuidos:
+            return 0.0
+        monto = tips_held.get(display, tips_held.get(display.strip(), 0.0))
+        if monto:
+            tips_ya_atribuidos.add(display)
+        return monto
+
+    # Una fila por REGISTRO de Toast, no por nombre: antes dos registros de la
+    # misma persona (uno por sucursal) colapsaban y las horas de uno se
+    # perdian, porque hours_by_name ASIGNABA en vez de acumular.
+    for guid in pending_guids:
+        empleado = employees[guid]
+        display = empleado["display"]
+        horas = horas_por_guid.get(guid, 0.0)
         held_back.append({
-            "nombre": name.strip(),
-            "horas": round(hours, 2),
-            "tips": round(tips_held.get(name, tips_held.get(name.strip(), 0.0)), 2),
+            "nombre": display.strip(),
+            "sucursal": empleado["location"],
+            "horas": round(horas, 2),
+            "tips": round(tips_de(display), 2),
             "motivo": "sin alta en Gusto o sin gusto_employee_id confirmado",
             "que_hacer": "dar de alta en Gusto y volver a correr, o capturar a mano",
         })
         avisar("accion", "retenido_sin_alta",
-            f"RETENIDO: {name.strip()} con {hours:.2f} h no entra al CSV porque no "
-            f"tiene alta en Gusto. Hay que pagarle aparte o darlo de alta y repetir.")
+            f"RETENIDO: {display.strip()} ({empleado['location']}) con "
+            f"{horas:.2f} h no entra al CSV porque no tiene alta en Gusto. Hay "
+            f"que pagarle aparte o darlo de alta y repetir.")
+
+    # Quien SI esta mapeado pero tiene horas sin destino no aparece en
+    # pending_guids (no esta pendiente de confirmar), asi que necesita su propia
+    # fila: si no, sus horas quedan contadas en horas_por_guid y sin recoger.
+    ya_listados = set(pending_guids)
+    for guid, horas in sorted(horas_sin_destino.items()):
+        if guid in ya_listados or horas <= 0.005:
+            continue
+        empleado = employees.get(guid) or {}
+        held_back.append({
+            "nombre": (empleado.get("display") or guid).strip(),
+            "sucursal": empleado.get("location", ""),
+            "horas": round(horas, 2),
+            "tips": 0.0,
+            "motivo": motivo_sin_destino.get(guid, "sus horas no tienen destino"),
+            "que_hacer": ("mapear ese job en job_map.csv o corregir el job del "
+                          "turno en Toast, y volver a generar"),
+        })
+        avisar("accion", "horas_sin_renglon",
+            f"RETENIDO: {(empleado.get('display') or guid).strip()} con "
+            f"{horas:.2f} h no entra al CSV porque "
+            f"{motivo_sin_destino.get(guid, 'sus horas no tienen destino')}. "
+            f"Esas horas quedan para pagarlas aparte.")
+
+    # El caso que no tenia aviso: tiene id de Gusto y ese id no esta en ningun
+    # template.
+    for employee_id, horas in sorted(horas_sin_template.items()):
+        if horas <= 0.005:
+            continue
+        quien = name_by_identity.get(employee_id, employee_id)
+        held_back.append({
+            "nombre": quien.strip(),
+            "sucursal": "",
+            "horas": round(horas, 2),
+            "tips": 0.0,
+            "motivo": (f"su id de Gusto ({employee_id}) no aparece en el template "
+                       f"de ninguna empresa"),
+            "que_hacer": ("volver a bajar el template de Gusto: si la persona ya "
+                          "no esta de alta ahi y sigue fichando en Toast, hay que "
+                          "decidir si se le paga y como"),
+        })
+        avisar("accion", "retenido_sin_alta",
+            f"RETENIDO: {quien.strip()} con {horas:.2f} h tiene id de Gusto "
+            f"({employee_id}) pero ese id no esta en el template de ninguna "
+            f"empresa, asi que sus horas no tienen renglon donde caer. Vuelve a "
+            f"bajar el template de Gusto y repite.")
 
     # Las horas de alguien que SI esta en Gusto pero cuyo job no tiene renglon
     # en el template. No es "sin alta en Gusto": la persona existe y cobra, lo

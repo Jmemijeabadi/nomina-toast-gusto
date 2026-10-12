@@ -28,6 +28,7 @@ from datetime import date
 import build_maps
 import ca_overtime
 import gusto_export
+import toast_falso
 import toast_payroll
 from ca_overtime import compute_overtime, workweek_start
 from toast_payroll import pay_period_containing
@@ -747,6 +748,109 @@ class TestNoHayPagoDoble(unittest.TestCase):
         self.assertTrue(mapa["g3"]["excluir"])
         self.assertFalse(mapa["g3"]["pendiente"],
                          "un EXCLUIR no debe salir como pendiente de confirmar")
+
+
+class TestNadaSePierdeEnRetenidos(unittest.TestCase):
+    """Toda hora que entra sale al CSV o a retenidos, en los casos raros.
+
+    Estos escenarios no existen en la cuenta como esta hoy, asi que los tests
+    contra datos reales pasaban aunque los bugs estuvieran ahi. Se fabrican con
+    toast_falso para no esperar a que le paguen mal a alguien.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+    DIAS = ("2026-09-07", "2026-09-08", "2026-09-09")
+
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+
+    def test_una_persona_con_un_registro_por_sucursal_sin_mapear(self):
+        """hours_by_name ASIGNABA en vez de acumular, y pending era un set de
+        nombres: los dos registros se llaman igual, colapsaban en uno y las
+        horas del segundo desaparecian del cuadre."""
+        tel = "6195550101"
+        a = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Dalia", telefono=tel)
+        b = self.esc.empleado("National City", "Ejemplo", "Dalia", telefono=tel)
+        for dia in self.DIAS:
+            self.esc.turno(a, dia, horas=8.0, con_meal=True)
+            self.esc.turno(b, dia, horas=6.0, con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2,
+                               msg="horas sin explicar: alguna se perdio entre "
+                                   "los dos registros de la misma persona")
+        self.assertAlmostEqual(r["hours_held"], 42.0, places=2,
+                               msg="deben quedar retenidas las 24 h de una "
+                                   "sucursal MAS las 18 h de la otra")
+        sucursales = {h.get("sucursal") for h in r["held_back"] if h["horas"] > 0}
+        self.assertEqual(sucursales, {"Gaslamp Quarter", "National City"},
+                         "cada registro necesita su propia fila: si no, quien "
+                         "paga a mano no sabe que son dos sucursales")
+
+    def test_un_id_de_gusto_que_no_esta_en_ningun_template(self):
+        """Caso que NINGUN aviso nombraba: la persona tiene id de Gusto, el id
+        no aparece en el template, sus horas se borraban del CSV y no entraban
+        a retenidos. Pasa con quien sigue fichando despues de salir de Gusto."""
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Eliseo",
+                                  gusto_id="zzz999", en_template=False)
+        for dia in self.DIAS:
+            self.esc.turno(quien, dia, horas=8.0, con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2,
+                               msg="24 h desaparecieron: ni al CSV ni a retenidos")
+        self.assertAlmostEqual(r["hours_held"], 24.0, places=2)
+        self.assertTrue(
+            any("zzz999" in a["texto"] for a in r["avisos"]),
+            "ningun aviso nombra el id que no esta en el template, asi que "
+            "quien opera no tiene con que actuar")
+
+    def test_el_cuadre_mide_lo_que_se_escribe_no_las_celdas(self):
+        """Un job cuyo title no esta entre los de la persona: la celda
+        sobrevivia, el CSV salia sin esas horas y el cuadre decia +0.00."""
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Fabiola",
+                                  gusto_id="yyy888")
+        # un segundo renglon para que tenga DOS titles y caiga en el `else`
+        self.esc.renglon_de_gusto("Gaslamp Quarter", "Ejemplo", "Fabiola",
+                                  "yyy888", job="Lead")
+        for dia in self.DIAS:
+            self.esc.turno(quien, dia, horas=8.0, job="Dishwasher", con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        self.assertAlmostEqual(
+            r["hours_placed"], toast_falso.horas_escritas(r), places=2,
+            msg="'al CSV' no coincide con lo escrito: el cuadre esta mintiendo")
+        self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2)
+        self.assertAlmostEqual(r["hours_held"], 24.0, places=2,
+                               msg="esas 24 h no salen en el CSV, asi que tienen "
+                                   "que quedar en retenidos para pagarlas aparte")
+    def test_un_job_sin_mapear_no_tira_las_horas(self):
+        """Dos `continue` tiraban las horas al vacio: ni al CSV, ni a retenidos,
+        ni al hueco. El aviso de la persona salia diciendo 'con 0.00 h', que es
+        lo que delataba el bug. Pasa con un job nuevo en Toast sin mapear."""
+        self.esc.mapear_jobs = False
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Gael",
+                                  gusto_id="xxx777")
+        self.esc.renglon_de_gusto("Gaslamp Quarter", "Ejemplo", "Gael",
+                                  "xxx777", job="Lead")
+        for dia in self.DIAS:
+            self.esc.turno(quien, dia, horas=8.0, job="PuestoNuevo", con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2,
+                               msg="24 h tiradas al vacio por un job sin mapear")
+        self.assertAlmostEqual(r["hours_held"], 24.0, places=2)
+        avisos_con_horas = [a for a in r["avisos"]
+                            if "RETENIDO" in a["texto"] and "0.00 h" in a["texto"]]
+        self.assertEqual(avisos_con_horas, [],
+                         "un aviso de RETENIDO con 0.00 h significa que las "
+                         "horas se perdieron antes de contarse")
+
 
 
 if __name__ == "__main__":
