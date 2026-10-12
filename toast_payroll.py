@@ -94,7 +94,12 @@ MEAL_DEADLINE_HOURS = 5.0
 # del waiver, no el disparador: confundirlos deja sin auditar toda la banda de
 # 10 a 12 h. Medido en esta cuenta: 36 turnos en esa banda en 28 dias, 33 sin
 # segundo meal valido, ~$609 de primas que nunca se detectaron.
-SECOND_MEAL_TRIGGER_HOURS = 10.0
+# 12 h, no 10: es el parametro de la app de auditoria de meal breaks
+# (second_meal_limit_hours), que es de donde salen los meal violations que se
+# capturan hoy. La ley pide el segundo meal arriba de 10 h, asi que este valor
+# es MAS permisivo; se deja igual que la fuente de registro y la diferencia se
+# reporta, en vez de imponer otra lectura por mi cuenta.
+SECOND_MEAL_TRIGGER_HOURS = 12.0
 SECOND_MEAL_WAIVER_CEILING_HOURS = 12.0
 SECOND_MEAL_DEADLINE_HOURS = 10.0
 
@@ -706,9 +711,15 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
         # 6 h. Medido el 2026-10-12 en los dos periodos cerrados: 158 y 151
         # turnos sin descanso en esa banda, de 53 y 54 personas. Eso era prima
         # que no se pagaba. El segundo meal ya estaba bien asi; el primero no.
-        first_meal_owed = work_period > FIRST_MEAL_TRIGGER_HOURS
+        # La app de auditoria dispara con worked_hours = regularHours +
+        # overtimeHours, que es payable_hours. Antes aqui se usaba work_period
+        # (transcurrido menos breaks no pagados), que audita MAS turnos pero se
+        # separa de la fuente con la que se viene pagando. Lo que ese cambio
+        # deja fuera se mide y se reporta mas abajo.
+        horas_disparo = payable_hours if payable_hours > 0 else work_period
+        first_meal_owed = horas_disparo > FIRST_MEAL_TRIGGER_HOURS
         if first_meal_owed and FIRST_MEAL_WAIVER_DOCUMENTED:
-            if work_period <= FIRST_MEAL_WAIVER_CEILING_HOURS:
+            if horas_disparo <= FIRST_MEAL_WAIVER_CEILING_HOURS:
                 first_meal_owed = False
 
         if first_meal_owed:
@@ -717,11 +728,11 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
             elif meals[0] > add_work_hours(start, MEAL_DEADLINE_HOURS):
                 violations.append("Late Meal Break")
 
-        second_meal_owed = work_period > SECOND_MEAL_TRIGGER_HOURS
+        second_meal_owed = horas_disparo > SECOND_MEAL_TRIGGER_HOURS
         if second_meal_owed and SECOND_MEAL_WAIVER_DOCUMENTED:
             # El waiver solo alcanza la banda hasta el techo y solo si el primer
             # meal si se tomo.
-            if work_period <= SECOND_MEAL_WAIVER_CEILING_HOURS and len(meals) >= 1:
+            if horas_disparo <= SECOND_MEAL_WAIVER_CEILING_HOURS and len(meals) >= 1:
                 second_meal_owed = False
 
         if second_meal_owed:
@@ -748,6 +759,13 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
         "payable_hours": payable_hours,
         "work_period_hours": round(work_period, 4),
         "unpaid_break_hours": round(unpaid_break_hours, 4),
+        # True cuando el criterio de la app (horas pagables) deja el turno por
+        # debajo del umbral pero el tiempo en el local lo pasa. No genera
+        # violacion: se cuenta para poder decir cuanto se esta dejando fuera.
+        "fuera_por_el_criterio": bool(
+            start and end
+            and payable_hours <= FIRST_MEAL_TRIGGER_HOURS
+            and work_period > FIRST_MEAL_TRIGGER_HOURS),
         "hourly_wage": hourly_wage,
         "is_salaried_shift": hourly_wage is None,
         "violations": violations,

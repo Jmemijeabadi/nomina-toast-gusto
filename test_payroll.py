@@ -875,5 +875,65 @@ class TestNadaSePierdeEnRetenidos(unittest.TestCase):
 
 
 
+class TestAlineadoConLaAppDeAuditoria(unittest.TestCase):
+    """Los meal violations salen de la app de auditoria, no de mi lectura.
+
+    Esa app es la fuente con la que se capturan hoy. Fijar sus parametros aqui
+    evita que alguien los "mejore" y la nomina deje de reproducir lo que ya se
+    revisa. Verificado contra el periodo que Tany hizo a mano
+    (2026-07-25/08-07): National City da 17 de 17, 11 de 11 personas iguales.
+    """
+
+    def test_los_parametros_son_los_de_la_app(self):
+        self.assertEqual(toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS, 6.0,
+                         "waiver_limit_hours de la app")
+        self.assertEqual(toast_payroll.MEAL_DEADLINE_HOURS, 5.0,
+                         "meal_deadline_hours de la app")
+        self.assertEqual(toast_payroll.SECOND_MEAL_TRIGGER_HOURS, 12.0,
+                         "second_meal_limit_hours de la app; la ley pide 10, "
+                         "asi que este valor es mas permisivo a proposito")
+        self.assertEqual(toast_payroll.SECOND_MEAL_DEADLINE_HOURS, 10.0,
+                         "second_meal_deadline_hours de la app")
+        self.assertEqual(toast_payroll.MIN_BREAK_MINUTES, 30)
+
+    def test_dispara_con_las_horas_pagables(self):
+        """La app usa worked_hours = regularHours + overtimeHours."""
+        turno = {
+            "guid": "t", "businessDate": 20260910, "deleted": False,
+            "inDate": "2026-09-10T16:00:00.000+0000",
+            "outDate": "2026-09-10T23:00:00.000+0000",   # 7 h en el local
+            "regularHours": 6.5, "overtimeHours": 0.0,   # 6.5 h pagables
+            "hourlyWage": 18.0, "breaks": [],
+            "employeeReference": {"guid": "e"}, "jobReference": {"guid": "j"},
+        }
+        a = toast_payroll.audit_time_entry(turno)
+        self.assertAlmostEqual(a["payable_hours"], 6.5, places=2)
+        self.assertIn("Missed Meal Break", a["violations"],
+                      "6.5 h pagables pasan el techo de 6 h: debe violacion")
+
+    def test_el_segundo_meal_no_dispara_entre_10_y_12(self):
+        """Con el parametro de la app, la banda de 10 a 12 h no pide 2do meal."""
+        turno = {
+            "guid": "t", "businessDate": 20260910, "deleted": False,
+            "inDate": "2026-09-10T14:00:00.000+0000",
+            "outDate": "2026-09-10T01:00:00.000+0000",
+            "regularHours": 11.0, "overtimeHours": 0.0,
+            "hourlyWage": 18.0,
+            "breaks": [{
+                "guid": "b", "breakType": {"guid": sorted(toast_payroll.MEAL_BREAK_TYPE_GUIDS)[0]},
+                "inDate": "2026-09-10T18:00:00.000+0000",
+                "outDate": "2026-09-10T18:32:00.000+0000",
+                "paid": False, "missed": False, "waived": False, "deleted": False,
+            }],
+            "employeeReference": {"guid": "e"}, "jobReference": {"guid": "j"},
+        }
+        a = toast_payroll.audit_time_entry(turno)
+        self.assertAlmostEqual(a["payable_hours"], 11.0, places=2)
+        self.assertNotIn("Missing 2nd Meal", a["violations"],
+                         "11 h no pasan el umbral de 12 h de la app. La ley "
+                         "pide el 2do meal arriba de 10 h: si eso se corrige, "
+                         "hay que cambiar SECOND_MEAL_TRIGGER_HOURS a proposito")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
