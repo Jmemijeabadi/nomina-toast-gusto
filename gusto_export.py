@@ -583,6 +583,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     # Medido en un periodo real: ~568 h en esta situacion, el caso mas grande
     # 77 h fichadas con un job que en Gusto no existe para esa persona.
     unmapped_hours = {}
+    horas_sin_renglon = []
     name_by_identity = {}
     for guid, employee in employees.items():
         if employee.get("gusto_employee_id"):
@@ -616,10 +617,31 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 f"como '{titles[0]}', que es su unico job en Gusto. Si la tarifa "
                 f"deberia ser distinta, hay que alinear el job en los dos sistemas.")
         else:
+            # Esta rama era la UNICA de las cuatro que no borraba la celda. La
+            # celda huerfana sobrevivia, pero el CSV se escribe recorriendo los
+            # renglones del TEMPLATE, y un title que no esta ahi nunca se lee:
+            # las horas no salian. Y como hours_placed se suma de hours_by_cell
+            # y no de los renglones escritos, el cuadre daba +0.00 y el
+            # guardarraíl que deberia atrapar esto se quedaba callado. Medido:
+            # 80 h ($1,600) desaparecidas con la pantalla jurando que cuadra.
+            #
+            # Ahora se borra y las horas van a retenidos, como en las otras
+            # ramas: asi el cuadre dice la verdad y quien opera tiene con que
+            # pagarlas a mano. No bloquea: lo decide la persona.
+            del hours_by_cell[key]
+            horas_sin_renglon.append({
+                "nombre": who,
+                "horas": total,
+                "title": title,
+                "titles": list(titles),
+                "company": company,
+            })
             avisar("accion", "horas_sin_renglon",
                 f"{who}: {total:.2f} h de '{title}' no tienen renglon en Gusto, y "
                 f"tiene varios jobs ({', '.join(titles)}) asi que no se adivina a "
-                f"cual van. Agrega ese job en Gusto o corrige el de Toast.")
+                f"cual van. Esas horas NO salen en el CSV: quedan en la lista de "
+                f"retenidos para pagarlas aparte. Agrega ese job en Gusto o "
+                f"corrige el de Toast y vuelve a generar.")
 
     # Solo cuenta como pendiente quien tiene turnos DENTRO del periodo. Antes se
     # miraba todo `audited`, que incluye los 7 dias de contexto previo, asi que
@@ -821,6 +843,21 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"RETENIDO: {name.strip()} con {hours:.2f} h no entra al CSV porque no "
             f"tiene alta en Gusto. Hay que pagarle aparte o darlo de alta y repetir.")
 
+    # Las horas de alguien que SI esta en Gusto pero cuyo job no tiene renglon
+    # en el template. No es "sin alta en Gusto": la persona existe y cobra, lo
+    # que falta es el renglon de ese puesto. Se dice distinto porque la accion
+    # es distinta.
+    for item in horas_sin_renglon:
+        held_back.append({
+            "nombre": item["nombre"],
+            "horas": round(item["horas"], 2),
+            "tips": 0.0,
+            "motivo": (f"trabajo '{item['title']}' y ese puesto no tiene renglon "
+                       f"en Gusto (tiene {', '.join(item['titles'])})"),
+            "que_hacer": ("agregar ese job en Gusto y volver a generar, o pagarle "
+                          "esas horas aparte con la tarifa que corresponda"),
+        })
+
     reported_held = {h["nombre"] for h in held_back}
     for who, amount in sorted(tips_held.items(), key=lambda x: -x[1]):
         if who.strip() in reported_held or amount <= 0.005:
@@ -906,8 +943,17 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"ubicaron ${placed:,.2f} y ${sum(tips_held.values()):,.2f} quedaron "
             f"retenidos. Faltan ${gap:,.2f} sin explicar; no subir hasta cuadrarlo.")
 
-    hours_placed = sum(c["regular"] + c["overtime"] + c["double"]
-                       for c in hours_by_cell.values())
+    # Se mide de los RENGLONES QUE SE ESCRIBEN, no del diccionario de celdas.
+    # Medirlo de las celdas permitia que una celda sobreviviera sin tener
+    # renglon en el template: el CSV salia sin esas horas, el cuadre las contaba
+    # como colocadas, daba +0.00 y el guardarraíl se quedaba callado. Medido en
+    # un caso reproducido: 80 h ($1,600) con la pantalla jurando que cuadra.
+    # Contando lo escrito, cualquier hora que no llegue al archivo aparece sola
+    # como hueco, venga de donde venga.
+    hours_placed = sum(
+        float(fila[columna] or 0)
+        for filas in output.values() for fila in filas
+        for columna in ("regular_hours", "overtime_hours", "double_overtime_hours"))
     # Limpieza de la lista de retenidos: fuera quien no tiene ni horas ni tips,
     # que es ruido y devalua la lista. Y NADA MAS.
     #
