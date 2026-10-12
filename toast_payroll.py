@@ -105,6 +105,20 @@ SECOND_MEAL_DEADLINE_HOURS = 10.0
 # Toast este capturando la attestation y exista el consentimiento por escrito.
 MEAL_WAIVERS_DOCUMENTED = False
 
+# Si alguien ya contesto la pregunta de arriba mirando los expedientes. Es una
+# bandera APARTE del valor porque la respuesta vale dinero en los dos sentidos y
+# nadie la ha confirmado:
+#
+#   sin waivers firmados  el meal se debe arriba de 5 h. Medido en 2026-07-25/08-07:
+#                         113 h de prima en Gaslamp y 149 en National City
+#   con waivers firmados  se puede renunciar hasta 6 h. Mismo periodo: 53 y 15
+#
+# La diferencia es del orden de $2,600 por periodo entre las dos empresas, asi
+# que mientras esto sea False la herramienta lo pide a gritos en vez de elegir
+# por su cuenta. El criterio que Tany usaba a mano (43 y 17 en ese periodo)
+# coincide con "si hay waivers", pero coincidir no es lo mismo que constar.
+MEAL_WAIVERS_CONFIRMED = False
+
 MIN_BREAK_MINUTES = 30
 
 # Tope legal: las primas por meal period se topan en 1 hora por dia de trabajo,

@@ -53,7 +53,8 @@ from datetime import date, datetime, timedelta
 import ca_overtime
 import toast_payroll
 from toast_payroll import (FIRST_MEAL_WAIVER_CEILING_HOURS, GUSTO_COMPANIES,
-                           MEAL_PREMIUM_HOURS_CAP_PER_DAY, MEAL_WAIVERS_DOCUMENTED,
+                           MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+                           MEAL_WAIVERS_CONFIRMED, MEAL_WAIVERS_DOCUMENTED,
                            NON_PERSON_MARKERS,
                            ToastClient, audit_time_entry, load_employee_map,
                            resolve_locations, write_csv)
@@ -93,6 +94,7 @@ NIVELES = ("bloquea", "accion", "informativo")
 # De cada tipo, en que seccion de la pantalla va y si pide una decision.
 GRUPOS_DE_AVISO = {
     "semana_sin_confirmar":            "config",
+    "waivers_sin_confirmar":           "config",
     "falta_template":                  "config",
     "sucursal_sin_empresa_con_horas":  "sucursal",
     "sucursal_sin_empresa_sin_horas":  "sucursal",
@@ -294,6 +296,23 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "Leelo en Gusto > Pay > Pay settings y ponlo en ca_overtime.py: "
             "de ese valor dependen las 40 horas semanales y el septimo dia."
         )
+
+    # La pregunta de los waivers de comida vale ~$2,600 por periodo en los dos
+    # sentidos, y no la contesta el codigo: la contesta quien haya visto los
+    # expedientes. Mientras nadie la confirme se dice, con el numero, porque
+    # elegir en silencio es lo que hace que una suposicion se vuelva politica.
+    if not MEAL_WAIVERS_CONFIRMED:
+        con_waiver = "SE PUEDE renunciar" if MEAL_WAIVERS_DOCUMENTED else "NO se puede renunciar"
+        avisar("accion", "waivers_sin_confirmar",
+               f"Nadie ha confirmado si la empresa tiene waivers de comida "
+               f"firmados para turnos de 6 h o menos. Ahora mismo la herramienta "
+               f"asume que {con_waiver}, y de eso depende la prima de toda la "
+               f"banda de 5 a 6 h: medido, son del orden de $2,600 por periodo "
+               f"entre las dos empresas. Si hay waivers firmados en los "
+               f"expedientes, pon MEAL_WAIVERS_DOCUMENTED = True; si no hay, "
+               f"dejalo en False. En cualquiera de los dos casos pon "
+               f"MEAL_WAIVERS_CONFIRMED = True para que este aviso se calle.",
+               documentado=MEAL_WAIVERS_DOCUMENTED)
 
     # Paso 1: auditar los turnos del periodo, con 7 dias de contexto previo para
     # poder ver rachas de 7 dias consecutivos que arrancan antes del periodo.
