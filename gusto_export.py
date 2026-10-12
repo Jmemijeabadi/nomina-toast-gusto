@@ -1018,7 +1018,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"{nombre} tiene registros en las DOS empresas de Gusto. Sus horas NO "
             f"se estan sumando para el overtime de California, que es lo que pasa "
             f"hoy sin la herramienta. Si deben sumarse (joint employer), pon 'si' "
-            f"en persona_confirmada de sus dos filas en employee_map.csv y volve a "
+            f"en persona_confirmada de sus dos filas en employee_map.csv y vuelve a "
             f"generar.")
 
     # B) CIERRE DE HORAS. No existia: hours_placed y hours_held se calculaban y

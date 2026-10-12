@@ -246,7 +246,7 @@ with st.sidebar:
             st.error("Hay tests FALLANDO: no corras la nomina")
         elif saltados:
             st.warning(f"{saltados} test(s) se SALTARON, asi que no esta todo "
-                       f"verificado. Genera los CSV primero y volve a correrlos.")
+                       f"verificado. Genera los CSV primero y vuelve a correrlos.")
         else:
             st.success("Todos los tests pasan, sin saltos")
         cola = salida.strip().splitlines()[-12:]
@@ -257,7 +257,7 @@ with st.sidebar:
 
 st.title("Nomina: de Toast a Gusto")
 
-st.subheader("1. Elegi el periodo")
+st.subheader("1. Elige el periodo")
 
 opciones = periodos_recientes()
 etiquetas = [f"{i:%d %b} al {f:%d %b %Y}   ·   cheque {c:%d %b}"
@@ -286,7 +286,7 @@ if fin >= date.today():
 # se quedaba sin casilla. Paso al aparecer Tacos El Franc - Fresno.
 con_empresa = [l for l in locations if l["configured"]]
 
-st.subheader(f"2. Subi los {len(con_empresa)} reportes de tips")
+st.subheader(f"2. Sube los {len(con_empresa)} reportes de tips")
 st.caption("En Toast Web: **Reports → Labor → Tip management**, vista **By Day**, "
            f"con el rango **{inicio:%Y-%m-%d}** a **{fin:%Y-%m-%d}**, y descargalo. "
            "Uno por location.")
@@ -303,7 +303,7 @@ for columna, location in zip(columnas, con_empresa):
             rango = fechas_del_nombre(archivo.name)
             if rango and rango != (inicio, fin):
                 st.error(f"Ese archivo es del {rango[0]} al {rango[1]}, no del "
-                         f"periodo elegido. Bajalo con el rango correcto.")
+                         f"periodo elegido. Bajalo de nuevo con el rango correcto.")
             else:
                 if not rango:
                     st.caption("No pude leer las fechas del nombre; revisa que sea "
