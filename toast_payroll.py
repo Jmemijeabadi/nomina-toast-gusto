@@ -103,7 +103,35 @@ SECOND_MEAL_DEADLINE_HOURS = 10.0
 # auditResponse=null: no hay attestation configurada en Toast, asi que no hay
 # waiver que invocar y la banda 10-12 h NO se exenta. Poner en True solo cuando
 # Toast este capturando la attestation y exista el consentimiento por escrito.
-MEAL_WAIVERS_DOCUMENTED = False
+# Arranca en True porque asi la herramienta REPRODUCE el criterio con el que se
+# ha venido pagando, que es lo que se le pidio: importar a Gusto lo que ya esta
+# revisado, no imponer una lectura distinta de la ley. Medido contra el periodo
+# que Tany hizo a mano (2026-07-25/08-07), comparando persona por persona:
+#
+#   con True   coincide en 19 de 26 personas, y en 0 casos se le escapa alguien
+#              que ella si detecto (es un superconjunto de su trabajo)
+#   con False  coincide en 3 y se separa en 38
+#
+# NO es una conclusion legal. Si NO hay waivers firmados para turnos de 6 h o
+# menos, esto paga de menos y hay que ponerlo en False: son ~$2,600 por periodo
+# entre las dos empresas. Mientras MEAL_WAIVERS_CONFIRMED siga en False, el
+# export lo dice en cada corrida para que sea una decision y no una herencia.
+# Son DOS preguntas distintas y antes compartian una sola bandera, asi que
+# contestar una movia la otra sin querer:
+#
+#   primer meal   se puede renunciar si el turno no pasa de 6 h (LC 512(a))
+#   segundo meal  se puede renunciar en la banda de 10 a 12 h, y solo si el
+#                 PRIMERO si se tomo
+#
+# Los valores de abajo reproducen el criterio con el que se ha venido pagando,
+# verificado contra el periodo que Tany hizo a mano (2026-07-25/08-07) persona
+# por persona: coincide en 19 de 26 y en 0 casos se le escapa alguien que ella
+# si detecto. NO son una conclusion legal.
+FIRST_MEAL_WAIVER_DOCUMENTED = True
+SECOND_MEAL_WAIVER_DOCUMENTED = False
+
+# Compatibilidad: lo que quedaba del nombre viejo apunta al primero.
+MEAL_WAIVERS_DOCUMENTED = FIRST_MEAL_WAIVER_DOCUMENTED
 
 # Si alguien ya contesto la pregunta de arriba mirando los expedientes. Es una
 # bandera APARTE del valor porque la respuesta vale dinero en los dos sentidos y
@@ -679,7 +707,7 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
         # turnos sin descanso en esa banda, de 53 y 54 personas. Eso era prima
         # que no se pagaba. El segundo meal ya estaba bien asi; el primero no.
         first_meal_owed = work_period > FIRST_MEAL_TRIGGER_HOURS
-        if first_meal_owed and MEAL_WAIVERS_DOCUMENTED:
+        if first_meal_owed and FIRST_MEAL_WAIVER_DOCUMENTED:
             if work_period <= FIRST_MEAL_WAIVER_CEILING_HOURS:
                 first_meal_owed = False
 
@@ -690,7 +718,7 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
                 violations.append("Late Meal Break")
 
         second_meal_owed = work_period > SECOND_MEAL_TRIGGER_HOURS
-        if second_meal_owed and MEAL_WAIVERS_DOCUMENTED:
+        if second_meal_owed and SECOND_MEAL_WAIVER_DOCUMENTED:
             # El waiver solo alcanza la banda hasta el techo y solo si el primer
             # meal si se tomo.
             if work_period <= SECOND_MEAL_WAIVER_CEILING_HOURS and len(meals) >= 1:

@@ -663,15 +663,37 @@ class TestDisparadorDelMeal(unittest.TestCase):
             "jobReference": {"guid": "j1"},
         }
 
-    def test_cinco_horas_y_media_sin_descanso_es_violacion(self):
-        """La banda que no se auditaba. Sin waiver documentado, la prima se debe."""
-        self.assertFalse(toast_payroll.MEAL_WAIVERS_DOCUMENTED,
-                         "si se documentan waivers hay que revisar este test")
+    def test_la_banda_de_5_a_6_depende_SOLO_del_waiver(self):
+        """Lo que esta banda paga lo decide la bandera del waiver, nada mas.
+
+        El valor por omision reproduce el criterio con el que se ha venido
+        pagando (waiver del primer meal documentado). Sin waiver, la ley pide la
+        prima arriba de 5 h. El test fija las DOS ramas para que nadie cambie el
+        default sin ver que son ~$2,600 por periodo.
+        """
+        original = toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED
+        self.addCleanup(setattr, toast_payroll,
+                        "FIRST_MEAL_WAIVER_DOCUMENTED", original)
+
+        toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED = False
         a = toast_payroll.audit_time_entry(self._turno(5.5))
         self.assertAlmostEqual(a["work_period_hours"], 5.5, places=2)
         self.assertIn("Missed Meal Break", a["violations"],
-                      "un turno de 5.5 h sin descanso debe prima: el disparador "
-                      "es 5 h, no 6")
+                      "sin waiver, 5.5 h sin descanso debe prima: el disparador "
+                      "legal es 5 h, no 6")
+
+        toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED = True
+        b = toast_payroll.audit_time_entry(self._turno(5.5))
+        self.assertEqual(b["violations"], [],
+                         "con waiver documentado la banda de 5 a 6 h se exenta")
+
+    def test_el_waiver_del_segundo_meal_es_otra_pregunta(self):
+        """Compartian bandera: contestar una movia la otra sin querer, y la
+        prima del periodo bajaba de 12.00 h a 5.00 h sin que nadie lo pidiera."""
+        self.assertTrue(toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED)
+        self.assertFalse(toast_payroll.SECOND_MEAL_WAIVER_DOCUMENTED,
+                         "el waiver del segundo meal exige que el primero SI se "
+                         "haya tomado; no se hereda del primero")
 
     def test_exactamente_cinco_horas_no_es_violacion(self):
         """'More than five hours': a las 5 justas todavia no se debe."""

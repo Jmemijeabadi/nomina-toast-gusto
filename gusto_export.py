@@ -54,7 +54,8 @@ import ca_overtime
 import toast_payroll
 from toast_payroll import (FIRST_MEAL_WAIVER_CEILING_HOURS, GUSTO_COMPANIES,
                            MEAL_PREMIUM_HOURS_CAP_PER_DAY,
-                           MEAL_WAIVERS_CONFIRMED, MEAL_WAIVERS_DOCUMENTED,
+                           FIRST_MEAL_WAIVER_DOCUMENTED, MEAL_WAIVERS_CONFIRMED,
+                           SECOND_MEAL_WAIVER_DOCUMENTED,
                            NON_PERSON_MARKERS,
                            ToastClient, audit_time_entry, load_employee_map,
                            resolve_locations, write_csv)
@@ -302,17 +303,18 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     # expedientes. Mientras nadie la confirme se dice, con el numero, porque
     # elegir en silencio es lo que hace que una suposicion se vuelva politica.
     if not MEAL_WAIVERS_CONFIRMED:
-        con_waiver = "SE PUEDE renunciar" if MEAL_WAIVERS_DOCUMENTED else "NO se puede renunciar"
+        con_waiver = "SE PUEDE renunciar" if FIRST_MEAL_WAIVER_DOCUMENTED else "NO se puede renunciar"
         avisar("accion", "waivers_sin_confirmar",
                f"Nadie ha confirmado si la empresa tiene waivers de comida "
                f"firmados para turnos de 6 h o menos. Ahora mismo la herramienta "
                f"asume que {con_waiver}, y de eso depende la prima de toda la "
                f"banda de 5 a 6 h: medido, son del orden de $2,600 por periodo "
                f"entre las dos empresas. Si hay waivers firmados en los "
-               f"expedientes, pon MEAL_WAIVERS_DOCUMENTED = True; si no hay, "
+               f"expedientes esto ya esta bien; si NO hay, pon "
+               f"FIRST_MEAL_WAIVER_DOCUMENTED = False. "
                f"dejalo en False. En cualquiera de los dos casos pon "
                f"MEAL_WAIVERS_CONFIRMED = True para que este aviso se calle.",
-               documentado=MEAL_WAIVERS_DOCUMENTED)
+               documentado=FIRST_MEAL_WAIVER_DOCUMENTED)
 
     # Paso 1: auditar los turnos del periodo, con 7 dias de contexto previo para
     # poder ver rachas de 7 dias consecutivos que arrancan antes del periodo.
@@ -1142,7 +1144,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         "semana_laboral_arranca": ca_overtime.WORKWEEK_START_WEEKDAY,
         "semana_laboral_confirmada": ca_overtime.WORKWEEK_START_CONFIRMED,
         "tope_prima_por_dia": MEAL_PREMIUM_HOURS_CAP_PER_DAY,
-        "waivers_documentados": MEAL_WAIVERS_DOCUMENTED,
+        "waiver_primer_meal": FIRST_MEAL_WAIVER_DOCUMENTED,
+        "waiver_segundo_meal": SECOND_MEAL_WAIVER_DOCUMENTED,
         "columna_de_tips": NON_CASH_TIPS_COLUMN,
         "columna_de_prima": MEAL_PREMIUM_COLUMN,
         "tolerancia_horas": TOLERANCIA_HORAS,
@@ -1192,7 +1195,8 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     w(f"  semana laboral arranca      {dias[arranque] if isinstance(arranque, int) else '?'}"
       f"  (confirmada={d.get('semana_laboral_confirmada')})")
     w(f"  tope de prima por dia       {d.get('tope_prima_por_dia')} h")
-    w(f"  waivers de meal documentados {d.get('waivers_documentados')}")
+    w(f"  waiver del 1er meal (<=6 h)  {d.get('waiver_primer_meal')}")
+    w(f"  waiver del 2do meal (10-12 h) {d.get('waiver_segundo_meal')}")
     w(f"  tips no-efectivo a la columna '{d.get('columna_de_tips')}'")
     w(f"  prima a la columna          '{d.get('columna_de_prima')}'")
     w(f"  tolerancia del cuadre       {d.get('tolerancia_horas')} h / "
