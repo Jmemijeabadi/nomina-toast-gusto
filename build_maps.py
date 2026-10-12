@@ -523,7 +523,9 @@ def main() -> int:
                 "nota": note,
             })
 
-    # Identidad de PERSONA: agrupa los registros de Toast del mismo ser humano.
+    # La identidad de PERSONA se calcula mas abajo, DESPUES de recuperar las
+    # filas de quien no trabajo en la ventana: agrupar sin ellas parte en dos a
+    # quien tiene un registro por sucursal.
     pagables = [r for r in employee_rows if r["confianza"] != "no-persona"]
     claves = agrupar_personas(pagables)
     for row in employee_rows:
@@ -547,10 +549,42 @@ def main() -> int:
     employee_path = os.path.join(args.out_dir, "employee_map.csv")
     job_path = os.path.join(args.out_dir, "job_map.csv")
 
+    # person_key NO se arrastra: es algo que se CALCULA de los emails y
+    # telefonos, no una decision humana. Arrastrarlo lo congelaba en el valor de
+    # la primera corrida, y entonces un registro que no trabajo en la ventana
+    # conservaba una llave vieja y la persona quedaba partida en dos. Medido:
+    # Madriles tiene un registro en cada sucursal con el mismo telefono, pero el
+    # de Gaslamp traia su propio guid como llave y el de National City su email,
+    # asi que el exportador los veia como dos personas distintas, no avisaba del
+    # caso de dos empresas, y sus horas nunca se habrian sumado para el overtime
+    # de California aunque alguien lo confirmara.
+    previos_mapa = {}
+    if os.path.exists(employee_path):
+        with open(employee_path, newline="", encoding="utf-8-sig") as handle:
+            previos_mapa = {(r.get("toast_guid") or "").strip(): r
+                            for r in csv.DictReader(handle)}
+
     kept = merge_existing(employee_path, employee_rows, "toast_guid",
                           ("gusto_employee_id", "accion", "nota",
-                           "person_key", "persona_confirmada"),
+                           "persona_confirmada"),
                           compare_field="toast_name")
+
+    # Ahora que las filas huerfanas ya volvieron, se reagrupa sobre TODAS: su
+    # email y telefono siguen siendo validos para decidir quien es quien.
+    todos = [r for r in employee_rows if r.get("confianza") != "no-persona"]
+    claves_finales = agrupar_personas(todos)
+    for row in employee_rows:
+        nueva = claves_finales.get(row["toast_guid"], row["toast_guid"])
+        anterior = (previos_mapa.get(row["toast_guid"], {}).get("person_key") or "").strip()
+        confirmada = (row.get("persona_confirmada") or "").strip()
+        # Si la agrupacion cambio, lo que se confirmo antes era sobre OTRO grupo
+        # y ya no aplica: se vuelve a preguntar antes de sumar horas entre
+        # empresas.
+        if anterior and anterior != nueva and confirmada:
+            row["persona_confirmada"] = ""
+            row["nota"] = ("cambio con quien se agrupa esta persona: hay que "
+                           "confirmar de nuevo antes de sumar sus horas")
+        row["person_key"] = nueva
     kept += merge_existing(job_path, job_rows, ("toast_location", "toast_job"),
                            ("gusto_title", "accion", "nota"))
 

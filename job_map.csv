@@ -2,13 +2,13 @@ toast_location,toast_job,turnos_en_periodo,gusto_title,confianza,accion,nota
 Gaslamp Quarter,Taquero,170,Taquero,exacto,,
 Gaslamp Quarter,Cashier,93,cashier,exacto,,
 Gaslamp Quarter,Tortilla station,67,preparadora de tortilla,seguro,,equivalencia conocida: Tortilla station = preparadora de tortilla
-Gaslamp Quarter,Prep,49,Prep,exacto,,
+Gaslamp Quarter,Prep,50,Prep,exacto,,
 Gaslamp Quarter,Lead,17,cashier,ninguno,,"Solo Alexa Corrales ficha Lead (13 turnos) y su unico job en Gusto es cashier, a la misma tarifa $20.00"
 Gaslamp Quarter,Dishwasher,16,dishwasher,exacto,,
 Gaslamp Quarter,Busser,12,Busser,exacto,,
 Gaslamp Quarter,(sin jobReference),2,,ninguno,CONFIRMAR,el turno no trae jobReference
 National City,Taquero,194,Taquero,exacto,,
-National City,Server,144,Server,exacto,,
+National City,Server,145,Server,exacto,,
 National City,Busser,118,busser,exacto,,
 National City,Tortillera,69,preparadora de tortilla,seguro,,equivalencia conocida: Tortillera = preparadora de tortilla
 National City,Dishwasher,68,dishwasher,exacto,,
