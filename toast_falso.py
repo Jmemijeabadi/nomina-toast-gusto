@@ -93,7 +93,7 @@ class Escenario:
 
     def empleado(self, sucursal, apellido, nombre, *, gusto_id=None,
                  accion="", telefono="", email="", en_template=True,
-                 chosen=None, borrado=False):
+                 chosen=None, borrado=False, job="Taquero"):
         """Agrega un empleado de Toast y, si se pide, su renglon de Gusto."""
         self._n += 1
         guid = f"emp-{self._n:04d}"
@@ -113,7 +113,8 @@ class Escenario:
             "confianza": "exacto" if gusto_id else "", "accion": accion, "nota": "",
         })
         if gusto_id and en_template:
-            self.renglon_de_gusto(sucursal, apellido, nombre, gusto_id, primario=True)
+            self.renglon_de_gusto(sucursal, apellido, nombre, gusto_id,
+                                  job=job, primario=True)
         return guid
 
     def renglon_de_gusto(self, sucursal, apellido, nombre, gusto_id, *,

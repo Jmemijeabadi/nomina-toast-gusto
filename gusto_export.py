@@ -106,6 +106,7 @@ GRUPOS_DE_AVISO = {
     "tips_sin_dueno":                  "tips",
     "tips_sin_ubicar":                 "tips",
     "sin_tips_del_pool":               "tips",
+    "efectivo_en_puesto_inesperado":   "tips",
     "job_no_existe_en_gusto":          "jobs",
     "job_sin_title_en_gusto":          "jobs",
     "job_pagado_distinto":             "jobs",
@@ -137,6 +138,21 @@ TOLERANCIA_HORAS = 0.05
 TOLERANCIA_TIPS = 0.50
 
 NON_CASH_TIPS_COLUMN = "paycheck_tips"
+
+# Que puestos reciben tips en EFECTIVO, por empresa. Es una regla del negocio,
+# no del codigo: en Plaza Bonita solo Server, Bartender y Host; en Gaslamp
+# ninguno. Se compara sin mayusculas porque el template de Gusto las escribe
+# inconsistentes ('Server', 'Host', 'bartender').
+#
+# Esto NO mueve dinero. El reporte de tips sigue siendo la fuente y lo que diga
+# va al CSV tal cual; esta regla solo sirve para AVISAR cuando el efectivo cae
+# en un puesto donde no se espera, que casi siempre significa que hay que
+# mirar la politica en Tips Manager o el reporte. Medido en dos periodos: en
+# Bonita solo Server trae efectivo ($79.55 y $73.00) y en Gaslamp nadie.
+PUESTOS_CON_EFECTIVO = {
+    "tacos-franc-bonita-llc": {"server", "bartender", "host"},
+    "tacos-franc-gaslamp-llc": set(),
+}
 
 # La prima de meal nunca se escribe como monto: ver el docstring.
 MEAL_PREMIUM_COLUMN = "missed_break_hours"
@@ -806,6 +822,30 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 f"politica de Tips Manager, y entonces esta bien; o que sus "
                 f"turnos no traigan job en Toast, y entonces el pool no pudo "
                 f"acreditarlo y son tips que no le llegaron.")
+
+    # Los tips en efectivo caen donde el reporte dice. Si caen en un puesto que
+    # no los recibe, se dice con nombre y monto y lo decide quien opera.
+    for (company, pago, titulo), celda in sorted(tips_by_cell.items()):
+        efectivo = celda.get("cash", 0.0)
+        if efectivo <= 0.005:
+            continue
+        esperados = PUESTOS_CON_EFECTIVO.get(company)
+        if esperados is None:
+            continue                      # empresa sin regla definida
+        if titulo.strip().lower() in esperados:
+            continue
+        quien = name_by_identity.get(pago, pago)
+        if esperados:
+            detalle = ("en esa empresa el efectivo solo va a "
+                       + ", ".join(sorted(esperados)))
+        else:
+            detalle = "en esa empresa no se reparte efectivo a ningun puesto"
+        avisar("accion", "efectivo_en_puesto_inesperado",
+            f"{quien} tiene ${efectivo:,.2f} de tips en EFECTIVO en el puesto "
+            f"'{titulo}', y {detalle}. El monto va al CSV tal como lo trae el "
+            f"reporte; lo que conviene revisar es la politica en Tips Manager o "
+            f"si el reporte esta bien.",
+            company=company, titulo=titulo, monto=round(efectivo, 2))
 
     # Paso 6: llenar el template de cada empresa.
     output = {}

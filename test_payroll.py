@@ -964,5 +964,68 @@ class TestAlineadoConLaAppDeAuditoria(unittest.TestCase):
                          "hay que cambiar SECOND_MEAL_TRIGGER_HOURS a proposito")
 
 
+class TestEfectivoPorPuesto(unittest.TestCase):
+    """El efectivo solo va a ciertos puestos, y si cae en otro se dice.
+
+    En Plaza Bonita lo reciben Server, Bartender y Host; en Gaslamp ninguno.
+    Medido en dos periodos: en Bonita solo Server trae efectivo ($79.55 y
+    $73.00) y en Gaslamp nadie. La herramienta NO mueve el dinero — el reporte
+    manda — pero avisa cuando el efectivo aparece donde no se espera.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+
+    @staticmethod
+    def _reporte(nombre, job, efectivo, cheque=0.0):
+        """Como lo deja load_tip_report, que normaliza el CSV del reporte."""
+        return [{"employee": nombre, "job": job, "hours": 24.0,
+                 "cash": efectivo, "non_cash": cheque, "gratuity": 0.0}]
+
+    def test_la_regla_esta_escrita_y_es_la_del_negocio(self):
+        regla = gusto_export.PUESTOS_CON_EFECTIVO
+        self.assertEqual(regla["tacos-franc-bonita-llc"],
+                         {"server", "bartender", "host"})
+        self.assertEqual(regla["tacos-franc-gaslamp-llc"], set())
+
+    def test_avisa_si_el_efectivo_cae_en_un_taquero_de_bonita(self):
+        quien = self.esc.empleado("National City", "Ejemplo", "Ignacio",
+                                  gusto_id="t00001")
+        for dia in ("2026-09-07", "2026-09-08", "2026-09-09"):
+            self.esc.turno(quien, dia, horas=8.0, job="Taquero", con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN, tip_reports={
+            "tacos-franc-bonita-llc": self._reporte("Ignacio Ejemplo", "Taquero", 45.00)})
+
+        avisos = [a for a in r["avisos"]
+                  if a["tipo"] == "efectivo_en_puesto_inesperado"]
+        self.assertEqual(len(avisos), 1,
+                         "un Taquero de Bonita con efectivo tiene que avisar")
+        self.assertIn("45.00", avisos[0]["texto"])
+        self.assertIn("Taquero", avisos[0]["texto"])
+
+        # y el monto NO se mueve: va al CSV tal como lo trae el reporte
+        filas = r["by_company"]["tacos-franc-bonita-llc"]
+        efectivo = sum(float(f["cash_tips"] or 0) for f in filas)
+        self.assertAlmostEqual(efectivo, 45.00, places=2,
+                               msg="la herramienta no debe reasignar el efectivo: "
+                                   "el reporte es la fuente")
+
+    def test_no_avisa_si_el_efectivo_cae_en_un_server_de_bonita(self):
+        quien = self.esc.empleado("National City", "Ejemplo", "Julia",
+                                  gusto_id="t00002", job="Server")
+        for dia in ("2026-09-07", "2026-09-08"):
+            self.esc.turno(quien, dia, horas=8.0, job="Server", con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN, tip_reports={
+            "tacos-franc-bonita-llc": self._reporte("Julia Ejemplo", "Server", 73.00)})
+
+        self.assertEqual(
+            [a for a in r["avisos"] if a["tipo"] == "efectivo_en_puesto_inesperado"],
+            [], "Server SI recibe efectivo en Bonita: no debe avisar")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

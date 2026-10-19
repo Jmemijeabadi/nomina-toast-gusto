@@ -35,6 +35,12 @@ import toast_payroll
 from toast_payroll import (ToastClient, previous_closed_pay_period,
                            resolve_locations)
 
+COLUMNAS_CON_DATO = (
+    "regular_hours", "overtime_hours", "double_overtime_hours",
+    "missed_break_hours", "paycheck_tips", "cash_tips",
+    "custom_earning_distributed_service_charges",
+)
+
 st.set_page_config(page_title="Nomina Toast a Gusto", page_icon="💸", layout="wide")
 
 CENTAVO = 0.05          # tolerancia del cierre de cuentas
@@ -445,21 +451,79 @@ if resultado and st.session_state.get("periodo") == (inicio, fin):
         if not filas:
             continue
         suma = lambda col: sum(float(f[col] or 0) for f in filas)
-        st.markdown(f"**{company}** — {len(filas)} renglones")
-        metricas = st.columns(5)
+        con_dato = [f for f in filas if any(
+            (f[c] or "") for c in COLUMNAS_CON_DATO)]
+        st.markdown(f"**{company}** — {len(filas)} renglones, "
+                    f"{len(con_dato)} con datos")
+
+        metricas = st.columns(4)
         metricas[0].metric("Regular", f"{suma('regular_hours'):,.2f} h")
         metricas[1].metric("Overtime", f"{suma('overtime_hours'):,.2f} h")
         metricas[2].metric("Double time", f"{suma('double_overtime_hours'):,.2f} h")
         metricas[3].metric("Prima de meal", f"{suma('missed_break_hours'):,.2f} h")
-        metricas[4].metric("Tips", money(suma('paycheck_tips') + suma('cash_tips')
-                                         + suma('custom_earning_distributed_service_charges')))
 
-        tabla = pd.DataFrame(filas)[[
-            "last_name", "first_name", "title", "regular_hours", "overtime_hours",
-            "double_overtime_hours", "missed_break_hours", "paycheck_tips",
-            "cash_tips", "custom_earning_distributed_service_charges"]]
-        with st.expander("Ver los renglones", expanded=False):
-            st.dataframe(tabla, hide_index=True, use_container_width=True)
+        # Los tips, separados. Antes salian sumados en una sola metrica, y las
+        # tres columnas van a renglones y conceptos distintos en Gusto: no es lo
+        # mismo pagar en el cheque que entregar efectivo.
+        tips = st.columns(3)
+        tips[0].metric("Tips al cheque", money(suma('paycheck_tips')),
+                       help="columna paycheck_tips")
+        tips[1].metric("Tips en efectivo", money(suma('cash_tips')),
+                       help="columna cash_tips. En Plaza Bonita solo Server, "
+                            "Bartender y Host reciben efectivo; en Gaslamp nadie.")
+        tips[2].metric("Gratuity repartido",
+                       money(suma('custom_earning_distributed_service_charges')),
+                       help="columna custom_earning_distributed_service_charges")
+
+        # ── vista previa: como lo va a recibir Gusto ──
+        # Agrupada por persona porque asi es como Gusto la muestra, y porque es
+        # donde se ve quien tiene mas de un renglon de puesto: ahi estan los
+        # tips del job secundario, que es lo que falta probar en Gusto.
+        previa = []
+        for fila in sorted(con_dato, key=lambda f: (f["last_name"], f["first_name"],
+                                                    "(Primary)" not in f["title"])):
+            previa.append({
+                "Empleado": f"{fila['last_name']}, {fila['first_name']}",
+                "Puesto": fila["title"],
+                "Reg": fila["regular_hours"] or "",
+                "OT": fila["overtime_hours"] or "",
+                "DT": fila["double_overtime_hours"] or "",
+                "Prima": fila["missed_break_hours"] or "",
+                "Tips cheque": fila["paycheck_tips"] or "",
+                "Tips efectivo": fila["cash_tips"] or "",
+                "Gratuity": fila["custom_earning_distributed_service_charges"] or "",
+            })
+        if previa:
+            marco = pd.DataFrame(previa)
+            totales = {
+                "Empleado": "TOTAL", "Puesto": f"{len(previa)} renglones",
+                "Reg": f"{suma('regular_hours'):,.2f}",
+                "OT": f"{suma('overtime_hours'):,.2f}",
+                "DT": f"{suma('double_overtime_hours'):,.2f}",
+                "Prima": f"{suma('missed_break_hours'):,.2f}",
+                "Tips cheque": f"{suma('paycheck_tips'):,.2f}",
+                "Tips efectivo": f"{suma('cash_tips'):,.2f}",
+                "Gratuity": f"{suma('custom_earning_distributed_service_charges'):,.2f}",
+            }
+            marco = pd.concat([marco, pd.DataFrame([totales])], ignore_index=True)
+            with st.expander(f"Vista previa de como lo recibe Gusto "
+                             f"({len(previa)} renglones)", expanded=False):
+                st.caption("Un renglon por puesto, igual que el CSV. Los blancos "
+                           "en Gusto NO tocan nada: dejan el valor que ya tenga.")
+                st.dataframe(marco, hide_index=True, use_container_width=True)
+
+            secundarios = [p for p in previa
+                           if "(Primary)" not in p["Puesto"]
+                           and (p["Tips cheque"] or p["Tips efectivo"])]
+            if secundarios:
+                total_sec = sum(float(p["Tips cheque"] or 0) + float(p["Tips efectivo"] or 0)
+                                for p in secundarios)
+                st.warning(
+                    f"**{len(secundarios)} renglon(es) de puesto NO primario "
+                    f"llevan tips, por {money(total_sec)}.** Todavia no esta "
+                    f"comprobado que Gusto los acepte ahi. Al subir el archivo, "
+                    f"revisa en la pantalla de Gusto que esos montos cayeron "
+                    f"donde dice la tabla ANTES de procesar la nomina.")
 
         if not bloqueado:
             buffer = io.StringIO()
