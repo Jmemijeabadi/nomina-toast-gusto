@@ -627,14 +627,13 @@ class TestMapeoNoSePierde(unittest.TestCase):
 
 
 class TestDisparadorDelMeal(unittest.TestCase):
-    """El primer meal se debe arriba de 5 h, no de 6.
+    """El primer meal se dispara arriba de 6 h, como la app de auditoria.
 
-    Labor Code 512(a): se debe cuando el work period pasa de cinco horas. Las
-    seis horas son el TECHO hasta donde se puede renunciar a el, y solo por
-    consentimiento mutuo documentado. El codigo usaba el techo como disparador,
-    asi que la banda de 5 a 6 h nunca se auditaba: medido en los dos periodos
-    cerrados, 158 y 151 turnos sin descanso de 53 y 54 personas, que son 152 y
-    142 h de prima que no se pagaban.
+    La app de auditoria de meal breaks es la fuente de registro: su
+    waiver_limit_hours es 6.0 y su logica es `worked_hours > 6.0`. No hay
+    concepto de waiver: es solo el umbral. Una version anterior de este archivo
+    agregaba banderas de waiver que la app no tiene y pedia confirmarlas en cada
+    corrida; esos tests se fueron con ellas.
     """
 
     @staticmethod
@@ -663,37 +662,15 @@ class TestDisparadorDelMeal(unittest.TestCase):
             "jobReference": {"guid": "j1"},
         }
 
-    def test_la_banda_de_5_a_6_depende_SOLO_del_waiver(self):
-        """Lo que esta banda paga lo decide la bandera del waiver, nada mas.
-
-        El valor por omision reproduce el criterio con el que se ha venido
-        pagando (waiver del primer meal documentado). Sin waiver, la ley pide la
-        prima arriba de 5 h. El test fija las DOS ramas para que nadie cambie el
-        default sin ver que son ~$2,600 por periodo.
-        """
-        original = toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED
-        self.addCleanup(setattr, toast_payroll,
-                        "FIRST_MEAL_WAIVER_DOCUMENTED", original)
-
-        toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED = False
+    def test_cinco_horas_y_media_sin_descanso_no_es_violacion(self):
+        """La app usa 6 h: la banda de 5 a 6 h no genera violacion."""
         a = toast_payroll.audit_time_entry(self._turno(5.5))
-        self.assertAlmostEqual(a["work_period_hours"], 5.5, places=2)
-        self.assertIn("Missed Meal Break", a["violations"],
-                      "sin waiver, 5.5 h sin descanso debe prima: el disparador "
-                      "legal es 5 h, no 6")
+        self.assertEqual(a["violations"], [])
 
-        toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED = True
-        b = toast_payroll.audit_time_entry(self._turno(5.5))
-        self.assertEqual(b["violations"], [],
-                         "con waiver documentado la banda de 5 a 6 h se exenta")
-
-    def test_el_waiver_del_segundo_meal_es_otra_pregunta(self):
-        """Compartian bandera: contestar una movia la otra sin querer, y la
-        prima del periodo bajaba de 12.00 h a 5.00 h sin que nadie lo pidiera."""
-        self.assertTrue(toast_payroll.FIRST_MEAL_WAIVER_DOCUMENTED)
-        self.assertFalse(toast_payroll.SECOND_MEAL_WAIVER_DOCUMENTED,
-                         "el waiver del segundo meal exige que el primero SI se "
-                         "haya tomado; no se hereda del primero")
+    def test_exactamente_seis_horas_no_es_violacion(self):
+        """'> 6.0': a las 6 justas todavia no se debe, igual que la app."""
+        a = toast_payroll.audit_time_entry(self._turno(6.0))
+        self.assertEqual(a["violations"], [])
 
     def test_exactamente_cinco_horas_no_es_violacion(self):
         """'More than five hours': a las 5 justas todavia no se debe."""
@@ -707,13 +684,6 @@ class TestDisparadorDelMeal(unittest.TestCase):
     def test_con_descanso_a_tiempo_no_hay_violacion(self):
         a = toast_payroll.audit_time_entry(self._turno(5.5, con_meal=True))
         self.assertEqual(a["violations"], [])
-
-    def test_el_techo_del_waiver_sigue_siendo_seis(self):
-        """El techo no se toco: sigue separado del disparador."""
-        self.assertEqual(toast_payroll.FIRST_MEAL_TRIGGER_HOURS, 5.0)
-        self.assertEqual(toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS, 6.0)
-        self.assertLess(toast_payroll.FIRST_MEAL_TRIGGER_HOURS,
-                        toast_payroll.FIRST_MEAL_WAIVER_CEILING_HOURS)
 
 
 class TestNoHayPagoDoble(unittest.TestCase):

@@ -78,80 +78,38 @@ EMPLOYEE_MAP_PATH = os.environ.get("PAYROLL_EMPLOYEE_MAP", "")
 NON_PERSON_MARKERS = ("kds", "login", "for all devices", "training",
                       "test account", "online ordering")
 
-# Reglas de California, Labor Code 512(a).
+# ── Meal breaks: los parametros de la app de auditoria ──
 #
-# El primer meal se debe a partir de mas de 5 h y se puede renunciar por
-# consentimiento mutuo solo si la jornada no pasa de 6 h.
-FIRST_MEAL_TRIGGER_HOURS = 5.0
-# Labor Code 512(a): el meal se debe arriba de 5 h trabajadas. Las 6 h son
-# hasta donde se puede renunciar a el por consentimiento mutuo, no el
-# disparador. Confundirlos dejaba la banda de 5 a 6 h sin auditar.
-FIRST_MEAL_TRIGGER_HOURS = 5.0
+# Los meal violations que se capturan hoy salen de la app de Streamlit de
+# auditoria de meal breaks. Esa app es la fuente de registro, asi que estos
+# valores son LOS SUYOS — mismo significado, mismo numero — y audit_time_entry
+# los aplica con su misma logica. No se reinterpretan:
+#
+#   app                         aqui                              valor
+#   waiver_limit_hours          FIRST_MEAL_WAIVER_CEILING_HOURS     6.0
+#   meal_deadline_hours         MEAL_DEADLINE_HOURS                 5.0
+#   second_meal_limit_hours     SECOND_MEAL_TRIGGER_HOURS          12.0
+#   second_meal_deadline_hours  SECOND_MEAL_DEADLINE_HOURS         10.0
+#   min_break_minutes           MIN_BREAK_MINUTES                    30
+#
+# Logica, igual que la app, con las horas PAGABLES (regularHours+overtimeHours):
+#   turno > 6 h   sin meal valido -> Missed Meal Break
+#                 meal despues de la hora 5 -> Late Meal Break
+#   turno > 12 h  menos de 2 meals -> Missing 2nd Meal
+#                 2do meal despues de la hora 10 -> Late 2nd Meal
+#
+# Verificado contra el periodo que Tany hizo a mano (2026-07-25/08-07): National
+# City da 17 violaciones contra sus 17, once de once personas iguales.
+#
+# Nota para quien algun dia los cambie: el Labor Code 512(a) pide el primer meal
+# arriba de 5 h (renunciable hasta 6 h con consentimiento mutuo) y el segundo
+# arriba de 10 h. La app usa 6 y 12. Si se decide cambiar el criterio, se cambia
+# AQUI y EN LA APP a la vez, para que las dos sigan dando lo mismo; si no, la
+# nomina deja de coincidir con la auditoria que se revisa.
 FIRST_MEAL_WAIVER_CEILING_HOURS = 6.0
 MEAL_DEADLINE_HOURS = 5.0
-
-# El segundo meal se debe a partir de mas de DIEZ horas. Las 12 h son el techo
-# del waiver, no el disparador: confundirlos deja sin auditar toda la banda de
-# 10 a 12 h. Medido en esta cuenta: 36 turnos en esa banda en 28 dias, 33 sin
-# segundo meal valido, ~$609 de primas que nunca se detectaron.
-# 12 h, no 10: es el parametro de la app de auditoria de meal breaks
-# (second_meal_limit_hours), que es de donde salen los meal violations que se
-# capturan hoy. La ley pide el segundo meal arriba de 10 h, asi que este valor
-# es MAS permisivo; se deja igual que la fuente de registro y la diferencia se
-# reporta, en vez de imponer otra lectura por mi cuenta.
 SECOND_MEAL_TRIGGER_HOURS = 12.0
-SECOND_MEAL_WAIVER_CEILING_HOURS = 12.0
 SECOND_MEAL_DEADLINE_HOURS = 10.0
-
-# El waiver del segundo meal exige consentimiento mutuo comprobable Y que no se
-# haya renunciado al primero. En esta cuenta los 378 breaks vienen con waived=0 y
-# auditResponse=null: no hay attestation configurada en Toast, asi que no hay
-# waiver que invocar y la banda 10-12 h NO se exenta. Poner en True solo cuando
-# Toast este capturando la attestation y exista el consentimiento por escrito.
-# Arranca en True porque asi la herramienta REPRODUCE el criterio con el que se
-# ha venido pagando, que es lo que se le pidio: importar a Gusto lo que ya esta
-# revisado, no imponer una lectura distinta de la ley. Medido contra el periodo
-# que Tany hizo a mano (2026-07-25/08-07), comparando persona por persona:
-#
-#   con True   coincide en 19 de 26 personas, y en 0 casos se le escapa alguien
-#              que ella si detecto (es un superconjunto de su trabajo)
-#   con False  coincide en 3 y se separa en 38
-#
-# NO es una conclusion legal. Si NO hay waivers firmados para turnos de 6 h o
-# menos, esto paga de menos y hay que ponerlo en False: son ~$2,600 por periodo
-# entre las dos empresas. Mientras MEAL_WAIVERS_CONFIRMED siga en False, el
-# export lo dice en cada corrida para que sea una decision y no una herencia.
-# Son DOS preguntas distintas y antes compartian una sola bandera, asi que
-# contestar una movia la otra sin querer:
-#
-#   primer meal   se puede renunciar si el turno no pasa de 6 h (LC 512(a))
-#   segundo meal  se puede renunciar en la banda de 10 a 12 h, y solo si el
-#                 PRIMERO si se tomo
-#
-# Los valores de abajo reproducen el criterio con el que se ha venido pagando,
-# verificado contra el periodo que Tany hizo a mano (2026-07-25/08-07) persona
-# por persona: coincide en 19 de 26 y en 0 casos se le escapa alguien que ella
-# si detecto. NO son una conclusion legal.
-FIRST_MEAL_WAIVER_DOCUMENTED = True
-SECOND_MEAL_WAIVER_DOCUMENTED = False
-
-# Compatibilidad: lo que quedaba del nombre viejo apunta al primero.
-MEAL_WAIVERS_DOCUMENTED = FIRST_MEAL_WAIVER_DOCUMENTED
-
-# Si alguien ya contesto la pregunta de arriba mirando los expedientes. Es una
-# bandera APARTE del valor porque la respuesta vale dinero en los dos sentidos y
-# nadie la ha confirmado:
-#
-#   sin waivers firmados  el meal se debe arriba de 5 h. Medido en 2026-07-25/08-07:
-#                         113 h de prima en Gaslamp y 149 en National City
-#   con waivers firmados  se puede renunciar hasta 6 h. Mismo periodo: 53 y 15
-#
-# La diferencia es del orden de $2,600 por periodo entre las dos empresas, asi
-# que mientras esto sea False la herramienta lo pide a gritos en vez de elegir
-# por su cuenta. El criterio que Tany usaba a mano (43 y 17 en ese periodo)
-# coincide con "si hay waivers", pero coincidir no es lo mismo que constar.
-MEAL_WAIVERS_CONFIRMED = False
-
 MIN_BREAK_MINUTES = 30
 
 # Tope legal: las primas por meal period se topan en 1 hora por dia de trabajo,
@@ -704,38 +662,19 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
     # 267. Eso NO es un marcaje incompleto, es Toast diciendo que no se descanso.
     violations = []
     if start and end:
-        # El primer meal se debe arriba de 5 h, no de 6: el Labor Code 512(a)
-        # dice "more than five hours", y las 6 h son el TECHO hasta donde se
-        # puede RENUNCIAR a el, y solo por consentimiento mutuo documentado.
-        # Usar el techo como disparador dejaba sin auditar toda la banda de 5 a
-        # 6 h. Medido el 2026-10-12 en los dos periodos cerrados: 158 y 151
-        # turnos sin descanso en esa banda, de 53 y 54 personas. Eso era prima
-        # que no se pagaba. El segundo meal ya estaba bien asi; el primero no.
-        # La app de auditoria dispara con worked_hours = regularHours +
-        # overtimeHours, que es payable_hours. Antes aqui se usaba work_period
-        # (transcurrido menos breaks no pagados), que audita MAS turnos pero se
-        # separa de la fuente con la que se viene pagando. Lo que ese cambio
-        # deja fuera se mide y se reporta mas abajo.
-        horas_disparo = payable_hours if payable_hours > 0 else work_period
-        first_meal_owed = horas_disparo > FIRST_MEAL_TRIGGER_HOURS
-        if first_meal_owed and FIRST_MEAL_WAIVER_DOCUMENTED:
-            if horas_disparo <= FIRST_MEAL_WAIVER_CEILING_HOURS:
-                first_meal_owed = False
+        # La misma logica que la app de auditoria, con sus parametros (ver el
+        # bloque de constantes). El disparador son las horas PAGABLES, que es su
+        # worked_hours = regularHours + overtimeHours; si Toast no las calculo,
+        # cae al tiempo trabajado, igual que ella cae al transcurrido.
+        horas = payable_hours if payable_hours > 0 else work_period
 
-        if first_meal_owed:
+        if horas > FIRST_MEAL_WAIVER_CEILING_HOURS:
             if not meals:
                 violations.append("Missed Meal Break")
             elif meals[0] > add_work_hours(start, MEAL_DEADLINE_HOURS):
                 violations.append("Late Meal Break")
 
-        second_meal_owed = horas_disparo > SECOND_MEAL_TRIGGER_HOURS
-        if second_meal_owed and SECOND_MEAL_WAIVER_DOCUMENTED:
-            # El waiver solo alcanza la banda hasta el techo y solo si el primer
-            # meal si se tomo.
-            if horas_disparo <= SECOND_MEAL_WAIVER_CEILING_HOURS and len(meals) >= 1:
-                second_meal_owed = False
-
-        if second_meal_owed:
+        if horas > SECOND_MEAL_TRIGGER_HOURS:
             if len(meals) < 2:
                 violations.append("Missing 2nd Meal")
             elif meals[1] > add_work_hours(start, SECOND_MEAL_DEADLINE_HOURS):
@@ -759,13 +698,6 @@ def audit_time_entry(time_entry: dict, tz_name: str = TOAST_TIMEZONE) -> dict:
         "payable_hours": payable_hours,
         "work_period_hours": round(work_period, 4),
         "unpaid_break_hours": round(unpaid_break_hours, 4),
-        # True cuando el criterio de la app (horas pagables) deja el turno por
-        # debajo del umbral pero el tiempo en el local lo pasa. No genera
-        # violacion: se cuenta para poder decir cuanto se esta dejando fuera.
-        "fuera_por_el_criterio": bool(
-            start and end
-            and payable_hours <= FIRST_MEAL_TRIGGER_HOURS
-            and work_period > FIRST_MEAL_TRIGGER_HOURS),
         "hourly_wage": hourly_wage,
         "is_salaried_shift": hourly_wage is None,
         "violations": violations,
