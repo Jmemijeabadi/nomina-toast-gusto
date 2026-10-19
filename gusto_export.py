@@ -326,10 +326,10 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                f"asume que {con_waiver}, y de eso depende la prima de toda la "
                f"banda de 5 a 6 h: medido, son del orden de $2,600 por periodo "
                f"entre las dos empresas. Si hay waivers firmados en los "
-               f"expedientes esto ya esta bien; si NO hay, pon "
-               f"FIRST_MEAL_WAIVER_DOCUMENTED = False. "
-               f"dejalo en False. En cualquiera de los dos casos pon "
-               f"MEAL_WAIVERS_CONFIRMED = True para que este aviso se calle.",
+               f"expedientes, esto ya esta bien. Si NO hay, pon "
+               f"FIRST_MEAL_WAIVER_DOCUMENTED = False en toast_payroll.py. En "
+               f"cualquiera de los dos casos pon MEAL_WAIVERS_CONFIRMED = True "
+               f"para que este aviso se calle.",
                documentado=FIRST_MEAL_WAIVER_DOCUMENTED)
 
     # Paso 1: auditar los turnos del periodo, con 7 dias de contexto previo para
@@ -1172,7 +1172,16 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     diag_loc = {}
     for location in locations:
         nombre_loc = location["short"]
-        del_loc = [r for r in audited if r["location"] == nombre_loc]
+        # Solo el periodo. `audited` arranca 7 dias antes para poder ver
+        # rachas de 7 dias consecutivos que empiezan afuera, pero reportar esos
+        # dias aqui contaba 21 dias como si fueran 14: las horas por sucursal
+        # sumaban 5,805 mientras el cierre decia 3,789, y la tabla mostraba 47
+        # "Missed Meal Break" mientras el aviso de la misma corrida decia 32.
+        # Dos numeros distintos para lo mismo, en la misma pantalla.
+        del_loc = [r for r in audited
+                   if r["location"] == nombre_loc
+                   and start <= ca_overtime.parse_business_date(r["business_date"])
+                   <= end_inclusive]
         viol = defaultdict(int)
         for r in del_loc:
             for v in r["violations"]:

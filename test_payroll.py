@@ -1027,5 +1027,56 @@ class TestEfectivoPorPuesto(unittest.TestCase):
             [], "Server SI recibe efectivo en Bonita: no debe avisar")
 
 
+class TestElDiagnosticoMideElPeriodo(unittest.TestCase):
+    """Los numeros por sucursal tienen que ser del PERIODO, no de 21 dias.
+
+    `audited` arranca 7 dias antes del periodo para poder ver rachas de 7 dias
+    consecutivos que empiezan afuera. El diagnostico reportaba todo eso como si
+    fuera del periodo: en una corrida real del 2026-10-03/16 las horas por
+    sucursal sumaban 5,805 mientras el cierre decia 3,789, y la tabla mostraba
+    47 "Missed Meal Break" mientras el aviso de la MISMA corrida decia 32. Dos
+    numeros distintos para lo mismo, en la misma pantalla, es como se pierde la
+    confianza en una herramienta que nadie puede verificar a mano.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+
+    def test_las_horas_por_sucursal_suman_lo_que_entro(self):
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Karla",
+                                  gusto_id="d00001")
+        # un turno DENTRO del periodo y otro en los 7 dias de contexto previo
+        self.esc.turno(quien, "2026-09-07", horas=8.0, con_meal=True)
+        self.esc.turno(quien, "2026-09-02", horas=8.0, con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+
+        suma = sum(s["horas_pagables"]
+                   for s in r["diagnostico"]["por_sucursal"].values())
+        self.assertAlmostEqual(
+            suma, r["hours_reported"], places=2,
+            msg="las horas por sucursal no suman lo que el cierre dice que "
+                "entro: el diagnostico esta midiendo otra ventana")
+        self.assertAlmostEqual(suma, 8.0, places=2,
+                               msg="el turno del 2 de septiembre es contexto "
+                                   "previo; no debe contarse en el periodo")
+
+    def test_los_turnos_contados_son_los_del_periodo(self):
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Lucia",
+                                  gusto_id="d00002")
+        for dia in ("2026-09-07", "2026-09-08"):
+            self.esc.turno(quien, dia, horas=8.0, con_meal=True)
+        for dia in ("2026-09-01", "2026-09-02", "2026-09-03"):
+            self.esc.turno(quien, dia, horas=8.0, con_meal=True)
+
+        r = self.esc.correr(self.INICIO, self.FIN)
+        gaslamp = r["diagnostico"]["por_sucursal"]["Gaslamp Quarter"]
+        self.assertEqual(gaslamp["turnos"], 2,
+                         "solo 2 de los 5 turnos caen en el periodo")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
