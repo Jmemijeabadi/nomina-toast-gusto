@@ -1299,6 +1299,17 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
         w(f"     tips: paycheck {suma(NON_CASH_TIPS_COLUMN):>10,.2f}  "
           f"efectivo {suma('cash_tips'):>8,.2f}  "
           f"gratuity {suma('custom_earning_distributed_service_charges'):>9,.2f}")
+        # Los tips en renglones de puesto NO primario son la pregunta abierta
+        # mas cara: no esta comprobado que Gusto los acepte ahi. La pantalla ya
+        # lo muestra, pero si alguien manda solo este diagnostico no se veia.
+        secundarios = [f for f in filas if "(Primary)" not in f["title"]
+                       and (float(f[NON_CASH_TIPS_COLUMN] or 0)
+                            + float(f["cash_tips"] or 0)) > 0.005]
+        if secundarios:
+            monto = sum(float(f[NON_CASH_TIPS_COLUMN] or 0) + float(f["cash_tips"] or 0)
+                        for f in secundarios)
+            w(f"     tips en puesto NO primario: {len(secundarios)} renglones, "
+              f"${monto:,.2f}  (sin comprobar que Gusto los acepte ahi)")
 
     retenidos = [h for h in (resultado.get("held_back") or [])
                  if h["horas"] > 0 or h["tips"] > 0]
