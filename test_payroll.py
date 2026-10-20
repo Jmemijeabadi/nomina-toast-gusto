@@ -513,6 +513,45 @@ class TestReintento(unittest.TestCase):
             self.esperas, [toast_payroll.ToastClient.RATE_LIMIT_ESPERA_MAXIMA],
             "se respeto un Retry-After de una hora en vez de topalo")
 
+    def test_una_caida_de_red_tambien_se_reintenta(self):
+        """El reintento solo atrapaba HTTPError. Una conexion cortada a la mitad
+        tiraba la corrida entera: paso de verdad el 2026-10-20 con
+        "SSL: UNEXPECTED_EOF_WHILE_READING" a media verificacion."""
+        import ssl
+        llamadas = []
+
+        class Buena:
+            def read(self_inner):
+                return b'{"ok": true}'
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *a):
+                return False
+
+        def falso(request, timeout=None):
+            llamadas.append(1)
+            if len(llamadas) == 1:
+                raise urllib.error.URLError(ssl.SSLError("UNEXPECTED_EOF_WHILE_READING"))
+            if len(llamadas) == 2:
+                raise ConnectionResetError("la conexion se corto")
+            return Buena()
+
+        toast_payroll.urllib.request.urlopen = falso
+        request = urllib.request.Request("https://ejemplo/x")
+        self.assertEqual(self.client._abrir_con_reintento(request), {"ok": True})
+        self.assertEqual(len(llamadas), 3, "no reintento las fallas de red")
+
+    def test_una_caida_de_red_persistente_explica_que_paso(self):
+        intentos = toast_payroll.ToastClient.RATE_LIMIT_INTENTOS
+        def siempre_cae(request, timeout=None):
+            raise urllib.error.URLError("sin conexion")
+        toast_payroll.urllib.request.urlopen = siempre_cae
+        with self.assertRaises(RuntimeError) as ctx:
+            self.client._abrir_con_reintento(urllib.request.Request("https://ejemplo/x"))
+        self.assertIn("No se pudo hablar con Toast", str(ctx.exception))
+        self.assertEqual(len(self.esperas), intentos - 1)
+
+
 
 class TestNombresDefinidos(unittest.TestCase):
     """Ningun modulo puede usar un nombre que no existe.
@@ -1204,6 +1243,102 @@ class TestMarcaDeEfectivo(unittest.TestCase):
         marcadas = {fila for (fila, _), css in estilo.ctx.items() if css}
         self.assertEqual(marcadas, {0}, "solo el renglon con $45 debe ir en rojo")
 
+
+
+class TestReporteDeLaSucursalCorrecta(unittest.TestCase):
+    """Cada reporte de tips tiene que ser de la sucursal donde se usa.
+
+    Toast baja el reporte con el MISMO nombre de archivo para las dos
+    sucursales —el navegador solo le agrega "(1)" al segundo—, asi que no se
+    distinguen por el nombre. En una corrida real del 2026-10-03/16 se subieron
+    cruzados. La herramienta lo detuvo ($26,696.21 sin explicar) pero levanto 157
+    avisos sin decir nunca la causa. Cada reporte trae la gente de su sucursal:
+    100% de coincidencia con la propia contra 9-31% con la otra.
+    """
+
+    PLANTILLAS = {
+        "National City": {frozenset({"ana", "ejemplo"}), frozenset({"beto", "ejemplo"}),
+                          frozenset({"ciro", "ejemplo"}), frozenset({"dora", "ejemplo"})},
+        "Gaslamp Quarter": {frozenset({"elsa", "prueba"}), frozenset({"fito", "prueba"}),
+                            frozenset({"gema", "prueba"}), frozenset({"dora", "ejemplo"})},
+    }
+
+    @staticmethod
+    def _filas(*nombres):
+        return [{"employee": n} for n in nombres]
+
+    def test_reconoce_de_que_sucursal_es_cada_reporte(self):
+        nc = self._filas("Ana Ejemplo", "Beto Ejemplo", "Ciro Ejemplo")
+        gl = self._filas("Elsa Prueba", "Fito Prueba", "Gema Prueba")
+        self.assertEqual(gusto_export.sucursal_mas_probable(
+            gusto_export.coincidencia_por_sucursal(nc, self.PLANTILLAS)), "National City")
+        self.assertEqual(gusto_export.sucursal_mas_probable(
+            gusto_export.coincidencia_por_sucursal(gl, self.PLANTILLAS)), "Gaslamp Quarter")
+
+    def test_quien_trabaja_en_las_dos_no_confunde(self):
+        """Dora esta en las dos plantillas, como Alexa o Benjamin en la realidad."""
+        nc = self._filas("Ana Ejemplo", "Beto Ejemplo", "Dora Ejemplo")
+        coin = gusto_export.coincidencia_por_sucursal(nc, self.PLANTILLAS)
+        self.assertEqual(gusto_export.sucursal_mas_probable(coin), "National City")
+
+    def test_no_adivina_si_no_hay_ganador_claro(self):
+        mezcla = self._filas("Ana Ejemplo", "Elsa Prueba")
+        coin = gusto_export.coincidencia_por_sucursal(mezcla, self.PLANTILLAS)
+        self.assertEqual(gusto_export.sucursal_mas_probable(coin), "",
+                         "con 50/50 no debe elegir: mejor pedir que lo revisen")
+
+    def test_ignora_las_cuentas_de_sistema(self):
+        nc = self._filas("Ana Ejemplo", "Beto Ejemplo", "Online Ordering")
+        coin = gusto_export.coincidencia_por_sucursal(nc, self.PLANTILLAS)
+        self.assertAlmostEqual(coin["National City"], 1.0,
+                               msg="Online Ordering no es de ninguna plantilla y no "
+                                   "debe bajar la coincidencia")
+
+    def test_detecta_un_reporte_subido_en_la_casilla_equivocada(self):
+        nc = self._filas("Ana Ejemplo", "Beto Ejemplo", "Ciro Ejemplo")
+        coin = gusto_export.coincidencia_por_sucursal(nc, self.PLANTILLAS)
+        self.assertEqual(gusto_export.sucursal_real_del_reporte("Gaslamp Quarter", coin),
+                         "National City")
+        self.assertEqual(gusto_export.sucursal_real_del_reporte("National City", coin), "")
+
+
+class TestReportesCruzadosEnElMotor(unittest.TestCase):
+    """Con el motor completo: cruzados, una linea; no 157 avisos."""
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+        self.nc = [self.esc.empleado("National City", "Ejemplo", n, gusto_id=f"n{i:05d}")
+                   for i, n in enumerate(("Ana", "Beto", "Ciro", "Dora"))]
+        self.gl = [self.esc.empleado("Gaslamp Quarter", "Prueba", n, gusto_id=f"g{i:05d}")
+                   for i, n in enumerate(("Elsa", "Fito", "Gema", "Hugo"))]
+        for g in self.nc + self.gl:
+            self.esc.turno(g, "2026-09-07", horas=8.0, con_meal=True)
+
+    @staticmethod
+    def _reporte(apellido, nombres):
+        return [{"employee": f"{n} {apellido}", "job": "Taquero", "hours": 8.0,
+                 "cash": 0.0, "non_cash": 100.0, "gratuity": 0.0} for n in nombres]
+
+    def test_bien_puestos_no_bloquea(self):
+        r = self.esc.correr(self.INICIO, self.FIN, tip_reports={
+            "tacos-franc-bonita-llc": self._reporte("Ejemplo", ("Ana", "Beto", "Ciro", "Dora")),
+            "tacos-franc-gaslamp-llc": self._reporte("Prueba", ("Elsa", "Fito", "Gema", "Hugo"))})
+        self.assertEqual([a for a in r["avisos"] if a["tipo"] == "reporte_de_otra_sucursal"], [])
+
+    def test_cruzados_dice_al_reves_en_una_linea(self):
+        r = self.esc.correr(self.INICIO, self.FIN, tip_reports={
+            "tacos-franc-bonita-llc": self._reporte("Prueba", ("Elsa", "Fito", "Gema", "Hugo")),
+            "tacos-franc-gaslamp-llc": self._reporte("Ejemplo", ("Ana", "Beto", "Ciro", "Dora"))})
+        cruce = [a for a in r["avisos"] if a["tipo"] == "reporte_de_otra_sucursal"]
+        self.assertEqual(len(cruce), 1, "dos reportes cruzados son UN mensaje, no dos")
+        self.assertIn("AL REVES", cruce[0]["texto"])
+        self.assertEqual(cruce[0]["nivel"], "bloquea")
+        # y sin la avalancha de avisos persona por persona
+        ruido = [a for a in r["avisos"] if a["tipo"] == "tips_sin_ubicar"]
+        self.assertEqual(ruido, [], "los reportes equivocados no deben procesarse")
 
 
 if __name__ == "__main__":

@@ -10,8 +10,10 @@ Solo usa la libreria estandar: no necesita requests ni pandas.
 from __future__ import annotations
 
 import csv
+import http.client
 import json
 import os
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -304,6 +306,26 @@ class ToastClient:
                     except ValueError:
                         pass
                 sleep(min(espera, self.RATE_LIMIT_ESPERA_MAXIMA))
+            except (urllib.error.URLError, ConnectionError, TimeoutError,
+                    http.client.HTTPException, ssl.SSLError) as error:
+                # Fallas de RED, no respuestas de Toast: conexion cortada a la
+                # mitad, timeout del socket, SSL que se cae. El reintento de
+                # arriba solo atrapaba HTTPError, asi que una de estas tiraba la
+                # corrida entera. Paso de verdad el 2026-10-20 a media
+                # verificacion: "SSL: UNEXPECTED_EOF_WHILE_READING". En una
+                # nomina de cientos de llamadas es cuestion de tiempo.
+                #
+                # HTTPError es subclase de URLError, pero ya se atrapo arriba,
+                # asi que aqui solo llegan las de red.
+                if intento == self.RATE_LIMIT_INTENTOS - 1:
+                    raise RuntimeError(
+                        f"No se pudo hablar con Toast despues de "
+                        f"{self.RATE_LIMIT_INTENTOS} intentos ({type(error).__name__}: "
+                        f"{getattr(error, 'reason', error)}). Suele ser la red o "
+                        f"Toast con problemas: vuelve a intentar en unos minutos."
+                    ) from None
+                sleep(min(self.RATE_LIMIT_ESPERA_BASE * (2 ** intento),
+                          self.RATE_LIMIT_ESPERA_MAXIMA))
         raise AssertionError("inalcanzable")
 
     def get_restaurants(self) -> list:

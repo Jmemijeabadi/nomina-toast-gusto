@@ -115,6 +115,7 @@ GRUPOS_DE_AVISO = {
     "descansos_no_tomados":            "descansos",
     "cuadre_horas":                    "cuadre",
     "cuadre_tips":                     "cuadre",
+    "reporte_de_otra_sucursal":        "cuadre",
 }
 
 TITULOS_DE_GRUPO = {
@@ -160,6 +161,73 @@ def norm(value: str) -> str:
     decomposed = unicodedata.normalize("NFKD", (value or "").strip().lower())
     stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
     return " ".join(stripped.split())
+
+
+# ── a que sucursal pertenece cada reporte de tips ──
+#
+# Cada sucursal tiene su propia plantilla de personas, asi que los nombres de un
+# reporte dicen de donde es. Medido en dos periodos: cada reporte coincide 100%
+# con su sucursal y apenas 11-31% con la otra; ese traslape son las personas que
+# trabajan en las dos. No hay ambiguedad posible.
+#
+# Existe porque en una corrida real del 2026-10-03/16 los dos reportes se
+# subieron cruzados. La herramienta si lo detuvo — $26,696.21 sin explicar —
+# pero en vez de decir lo obvio levanto 157 avisos de "no se pudieron ubicar
+# los tips de X", uno por persona, que no ayudaban a nada.
+
+def tokens_de_nombre(nombre: str) -> frozenset:
+    """Las palabras de un nombre, sin acentos ni mayusculas, para comparar."""
+    texto = unicodedata.normalize("NFKD", nombre or "")
+    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    return frozenset(t for t in texto.replace(",", " ").lower().split() if len(t) > 2)
+
+
+def coincidencia_por_sucursal(filas: list, plantillas: dict) -> dict:
+    """{sucursal: que fraccion de las personas del reporte son de esa sucursal}.
+
+    `plantillas` es {sucursal: conjunto de tokens_de_nombre}. Las cuentas de
+    sistema (pedidos en linea) no cuentan: no son de ninguna plantilla.
+    """
+    gente = [tokens_de_nombre(f.get("employee", "")) for f in filas
+             if not any(m in norm(f.get("employee", "")) for m in NON_PERSON_MARKERS)]
+    gente = [g for g in gente if g]
+    if not gente:
+        return {}
+    return {sucursal: sum(1 for g in gente if g in nombres) / len(gente)
+            for sucursal, nombres in plantillas.items()}
+
+
+# Cuanta ventaja tiene que tener otra sucursal para decir que el reporte es suyo.
+# Con los datos reales la diferencia es de 69 a 89 puntos; 40 deja margen de
+# sobra para una sucursal con mucha gente compartida sin dar falsos positivos.
+MARGEN_DE_SUCURSAL = 0.40
+
+
+def sucursal_mas_probable(coincidencia: dict) -> str:
+    """De que sucursal es un reporte, solo si gana con claridad; si no, "".
+
+    Para reconocer el archivo SIN que nadie diga a que casilla va: los dos se
+    bajan de Toast con el mismo nombre, asi que el contenido es lo unico que
+    los distingue.
+    """
+    if not coincidencia:
+        return ""
+    orden = sorted(coincidencia.items(), key=lambda kv: -kv[1])
+    mejor, valor = orden[0]
+    segundo = orden[1][1] if len(orden) > 1 else 0.0
+    if valor - segundo >= MARGEN_DE_SUCURSAL:
+        return mejor
+    return ""
+
+
+def sucursal_real_del_reporte(asignada: str, coincidencia: dict) -> str:
+    """La sucursal a la que de verdad pertenece el reporte, o "" si esta bien."""
+    if not coincidencia or asignada not in coincidencia:
+        return ""
+    mejor = max(coincidencia, key=coincidencia.get)
+    if mejor != asignada and coincidencia[mejor] - coincidencia[asignada] >= MARGEN_DE_SUCURSAL:
+        return mejor
+    return ""
 
 
 def money(value: str) -> float:
@@ -686,6 +754,55 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         (g for g in guids_en_periodo
          if g in employees and employees[g]["pendiente"] and not employees[g]["excluir"]),
         key=lambda g: (employees[g]["display"], employees[g]["location"]))
+    # Antes de resolver los tips: cada reporte, ¿es de la sucursal en la que se
+    # subio? El reporte de Toast se baja con el MISMO nombre de archivo para las
+    # dos sucursales —el navegador solo le agrega "(1)" al segundo—, asi que no
+    # hay forma de distinguirlos por el nombre y cruzarlos es facil. Cruzados,
+    # el motor intentaba ubicar a cada persona en la sucursal equivocada y
+    # levantaba un aviso por cada una: 157 en una corrida real, sin decir nunca
+    # la causa. Ahora se detecta primero, se dice en UNA linea, y el reporte
+    # equivocado no se procesa para no enterrar el mensaje en ruido.
+    plantillas = defaultdict(set)
+    for empleado in employees.values():
+        for primero in (empleado.get("first_name_legal"), empleado.get("chosen_name_only")):
+            if primero:
+                plantillas[empleado["location"]].add(
+                    tokens_de_nombre(f"{primero} {empleado['last_name']}"))
+    reportes_ajenos = {}
+    for location in locations:
+        if not location["configured"]:
+            continue
+        filas_reporte = tip_reports.get(location["company"]) or []
+        if not filas_reporte:
+            continue
+        coincidencia = coincidencia_por_sucursal(filas_reporte, plantillas)
+        real = sucursal_real_del_reporte(location["short"], coincidencia)
+        if real:
+            reportes_ajenos[location["short"]] = (real, coincidencia)
+
+    if reportes_ajenos:
+        cruzados = (len(reportes_ajenos) == 2 and all(
+            reportes_ajenos.get(real, ("",))[0] == asignada
+            for asignada, (real, _) in reportes_ajenos.items()))
+        if cruzados:
+            avisar("bloquea", "reporte_de_otra_sucursal",
+                "Los dos reportes de tips se subieron AL REVES: el de cada sucursal "
+                "quedo en la casilla de la otra. Toast los baja con el mismo nombre "
+                "de archivo, asi que es facil cruzarlos. Cambialos de casilla y "
+                "vuelve a generar.")
+        else:
+            for asignada, (real, coincidencia) in sorted(reportes_ajenos.items()):
+                avisar("bloquea", "reporte_de_otra_sucursal",
+                    f"El reporte de tips que se subio como {asignada} es de {real}: "
+                    f"{coincidencia[real]:.0%} de sus personas son de {real} y solo "
+                    f"{coincidencia[asignada]:.0%} de {asignada}. Sube el reporte "
+                    f"correcto en esa casilla y vuelve a generar.")
+        # No se procesan: si se procesaran, cada persona saldria como un aviso
+        # aparte y el mensaje de arriba quedaria enterrado.
+        companias_ajenas = {loc["company"] for loc in locations
+                            if loc["short"] in reportes_ajenos}
+        tip_reports = {c: f for c, f in tip_reports.items() if c not in companias_ajenas}
+
     # Paso 5b: resolver los tips del reporte a (empresa, empleado, title).
     #
     # El reporte trae el nombre LEGAL de Toast (con el apellido compuesto escrito

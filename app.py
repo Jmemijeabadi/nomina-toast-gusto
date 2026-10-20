@@ -219,6 +219,25 @@ def periodos_recientes(cuantos: int = 8) -> list:
     return salida
 
 
+@st.cache_data(ttl=600, show_spinner=False)
+def plantillas_por_sucursal() -> dict:
+    """{sucursal: nombres de su gente}, para reconocer de quien es cada reporte."""
+    cliente = get_client()
+    plantillas = {}
+    for location in get_locations():
+        if not location["configured"]:
+            continue
+        nombres = set()
+        for empleado in cliente.get_employees(location["guid"]):
+            for primero in {empleado.get("firstName") or "",
+                            empleado.get("chosenName") or ""}:
+                if primero.strip():
+                    nombres.add(gusto_export.tokens_de_nombre(
+                        f"{primero} {empleado.get('lastName', '')}"))
+        plantillas[location["short"]] = nombres
+    return plantillas
+
+
 def fechas_del_nombre(nombre: str) -> tuple | None:
     """Saca el rango del nombre del archivo que exporta Toast.
 
@@ -388,35 +407,80 @@ if fin >= date.today():
 # se quedaba sin casilla. Paso al aparecer Tacos El Franc - Fresno.
 con_empresa = [l for l in locations if l["configured"]]
 
-st.subheader(f"2. Sube los {len(con_empresa)} reportes de tips")
+st.subheader("2. Sube los reportes de tips")
 st.caption("En Toast Web: **Reports → Labor → Tip management**, vista **By Day**, "
-           f"con el rango **{inicio:%Y-%m-%d}** a **{fin:%Y-%m-%d}**, y descargalo. "
-           "Uno por location.")
+           f"con el rango **{inicio:%Y-%m-%d}** a **{fin:%Y-%m-%d}**, una vez por "
+           f"sucursal. **Suelta los {len(con_empresa)} archivos aqui juntos:** no "
+           f"importa como se llamen, la herramienta reconoce de que sucursal es cada uno.")
 
+# UNA casilla para todos, y la sucursal se reconoce por el CONTENIDO.
+#
+# Antes habia una casilla por sucursal y habia que acertar cual archivo iba en
+# cual. Pero Toast baja el reporte con el MISMO nombre para las dos sucursales —
+# "EmployeeTipTotals-2026_10_03-2026_10_16.csv", y el navegador le agrega "(1)"
+# al segundo—, asi que no hay forma de saberlo por el nombre. En una corrida
+# real del 2026-10-03/16 se cruzaron. Cada reporte trae los nombres de la gente
+# de su sucursal, y eso si distingue: 100% de coincidencia con la propia contra
+# 9-31% con la otra.
+archivos = st.file_uploader("Reportes EmployeeTipTotals", type=["csv"],
+                            accept_multiple_files=True, key="tips_reportes",
+                            label_visibility="collapsed")
+
+compania_de = {l["short"]: l["company"] for l in con_empresa}
 subidos = {}
-columnas = st.columns(len(con_empresa)) if con_empresa else []
-for columna, location in zip(columnas, con_empresa):
-    with columna:
-        st.markdown(f"**{location['short']}**")
-        archivo = st.file_uploader("Reporte EmployeeTipTotals", type=["csv"],
-                                   key=f"tips_{location['guid']}",
-                                   label_visibility="collapsed")
-        if archivo is not None:
-            rango = fechas_del_nombre(archivo.name)
-            if rango and rango != (inicio, fin):
-                st.error(f"Ese archivo es del {rango[0]} al {rango[1]}, no del "
-                         f"periodo elegido. Bajalo de nuevo con el rango correcto.")
-            else:
-                if not rango:
-                    st.caption("No pude leer las fechas del nombre; revisa que sea "
-                               "el del periodo correcto.")
-                subidos[location["company"]] = archivo
-                st.success(f"{archivo.name}")
+if archivos:
+    plantillas = plantillas_por_sucursal()
+    for archivo in archivos:
+        rango = fechas_del_nombre(archivo.name)
+        if rango and rango != (inicio, fin):
+            st.error(f"**{archivo.name}** es del {rango[0]:%d %b} al {rango[1]:%d %b}, "
+                     f"no del periodo elegido. Bajalo de nuevo con el rango correcto.")
+            continue
+        try:
+            filas = gusto_export.load_tip_report(archivo)
+        except Exception as error:
+            st.error(f"**{archivo.name}** no parece un reporte EmployeeTipTotals de "
+                     f"Toast: {error}")
+            continue
+        finally:
+            archivo.seek(0)        # se vuelve a leer al generar
 
-faltantes = [l["short"] for l in con_empresa if l["company"] not in subidos]
+        coincidencia = gusto_export.coincidencia_por_sucursal(filas, plantillas)
+        sucursal = gusto_export.sucursal_mas_probable(coincidencia)
+        if not sucursal or sucursal not in compania_de:
+            # Sin un ganador claro no se adivina, pero tampoco se deja a la
+            # persona atorada: se le pregunta. Si elige mal, el motor lo vuelve a
+            # revisar y el cuadre lo detiene, asi que no pasa nada en silencio.
+            # Con los datos reales no ocurre: 100% contra 9-31%.
+            st.warning(f"**{archivo.name}**: no pude reconocer solo de que sucursal "
+                       f"es. Dime cual:")
+            opciones = ["—"] + [NOMBRE_EMPRESA.get(compania_de[s], s) for s in compania_de]
+            eleccion = st.selectbox("Sucursal de este archivo", opciones,
+                                    key=f"suc_{archivo.name}_{archivo.size}",
+                                    label_visibility="collapsed")
+            if eleccion == "—":
+                continue
+            sucursal = next(s for s in compania_de
+                            if NOMBRE_EMPRESA.get(compania_de[s], s) == eleccion)
+
+        compania = compania_de[sucursal]
+        nombre = NOMBRE_EMPRESA.get(compania, sucursal)
+        if compania in subidos:
+            st.error(f"Subiste **dos** reportes de **{nombre}** "
+                     f"({subidos[compania].name} y {archivo.name}). Falta el de la "
+                     f"otra sucursal.")
+            continue
+        subidos[compania] = archivo
+        st.success(f"**{nombre}** ← {archivo.name}")
+        if not rango:
+            st.caption("No pude leer las fechas del nombre; confirma que sea el "
+                       "del periodo correcto.")
+
+faltantes = [NOMBRE_EMPRESA.get(l["company"], l["short"]) for l in con_empresa
+             if l["company"] not in subidos]
 if faltantes:
-    st.info(f"Falta el reporte de: {', '.join(faltantes)}. Sin el, las columnas de "
-            f"tips saldrian vacias.")
+    st.info(f"Falta el reporte de: **{', '.join(faltantes)}**. Sin el, las "
+            f"columnas de tips saldrian vacias.")
 
 
 # ───────────────────────────── paso 3: generar ─────────────────────────────
