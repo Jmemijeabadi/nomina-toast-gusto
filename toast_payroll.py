@@ -114,9 +114,31 @@ SECOND_MEAL_TRIGGER_HOURS = 12.0
 SECOND_MEAL_DEADLINE_HOURS = 10.0
 MIN_BREAK_MINUTES = 30
 
-# Tope legal: las primas por meal period se topan en 1 hora por dia de trabajo,
-# sin importar cuantos meal periods se hayan perdido ese dia.
-MEAL_PREMIUM_HOURS_CAP_PER_DAY = 1.0
+# Cuantas horas de prima se pagan por las violaciones de un mismo dia.
+#
+# El Labor Code 226.7 pide UNA hora por dia de trabajo sin el descanso, sin
+# importar cuantos meal periods se hayan perdido ese dia. Tacos El Franc paga
+# UNA HORA POR CADA VIOLACION, que es como lo hacia la nomina manual: si en un
+# turno de 14 h se pierden el primero y el segundo meal, son dos horas. Es mas
+# de lo que pide la ley, y pagar de mas no es ilegal. Lo decidio el dueño el
+# 2026-10-20, para que nadie vea bajar su prima respecto a como se le pagaba.
+#
+# Medido contra la nomina manual de julio: con tope por dia daba 15 h en
+# National City contra las 17 que pago Tany (Dustin Delgado, dos dias con dos
+# violaciones); sin tope coincide.
+#
+#   None   una hora por violacion, sin tope (lo que se paga hoy)
+#   1.0    el tope legal: una hora por dia
+MEAL_PREMIUM_HOURS_CAP_PER_DAY = None
+
+
+def horas_de_prima(violaciones: int) -> float:
+    """Horas de prima por las violaciones de un mismo dia, segun la regla de arriba."""
+    if violaciones <= 0:
+        return 0.0
+    if MEAL_PREMIUM_HOURS_CAP_PER_DAY is None:
+        return float(violaciones)
+    return min(float(violaciones), MEAL_PREMIUM_HOURS_CAP_PER_DAY)
 
 # Calendario de nomina, leido de Gusto por MCP (pay_schedule
 # ff311926-90c9-4b10-98e9-71b7a8980d4f, "every other Friday", frecuencia
@@ -797,7 +819,7 @@ def aggregate_for_pay_period(client: ToastClient, start: date, end_inclusive: da
         if bucket["violations"] <= 0:
             continue
         premium = premium_by_employee[identity]
-        hours = min(float(bucket["violations"]), MEAL_PREMIUM_HOURS_CAP_PER_DAY)
+        hours = horas_de_prima(bucket["violations"])
         premium["hours"] += hours
         premium["days"] += 1
 

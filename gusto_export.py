@@ -53,7 +53,7 @@ from datetime import date, datetime, timedelta
 import ca_overtime
 import toast_payroll
 from toast_payroll import (FIRST_MEAL_WAIVER_CEILING_HOURS, GUSTO_COMPANIES,
-                           MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+                           MEAL_PREMIUM_HOURS_CAP_PER_DAY, horas_de_prima,
                            SECOND_MEAL_TRIGGER_HOURS,
                            NON_PERSON_MARKERS,
                            ToastClient, audit_time_entry, load_employee_map,
@@ -627,8 +627,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     premium_por_persona = defaultdict(float)
     for (persona, _day), count in day_violations.items():
         if count > 0:
-            premium_por_persona[persona] += min(
-                float(count), MEAL_PREMIUM_HOURS_CAP_PER_DAY)
+            premium_por_persona[persona] += horas_de_prima(count)
     # Se baja de persona a id de pago: si la persona tiene dos empresas, su
     # prima se paga UNA vez, en la empresa donde tiene mas horas.
     horas_por_pago = defaultdict(float)
@@ -1303,6 +1302,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         "semana_laboral_arranca": ca_overtime.WORKWEEK_START_WEEKDAY,
         "semana_laboral_confirmada": ca_overtime.WORKWEEK_START_CONFIRMED,
         "tope_prima_por_dia": MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+        "prima_por": ("violacion" if MEAL_PREMIUM_HOURS_CAP_PER_DAY is None
+                      else f"dia (tope {MEAL_PREMIUM_HOURS_CAP_PER_DAY} h)"),
         "primer_meal_si_pasa_de": FIRST_MEAL_WAIVER_CEILING_HOURS,
         "segundo_meal_si_pasa_de": SECOND_MEAL_TRIGGER_HOURS,
         "columna_de_tips": NON_CASH_TIPS_COLUMN,
@@ -1353,7 +1354,7 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     arranque = d.get("semana_laboral_arranca")
     w(f"  semana laboral arranca      {dias[arranque] if isinstance(arranque, int) else '?'}"
       f"  (confirmada={d.get('semana_laboral_confirmada')})")
-    w(f"  tope de prima por dia       {d.get('tope_prima_por_dia')} h")
+    w(f"  prima de meal               una hora por {d.get('prima_por')}")
     w(f"  1er meal requerido si pasa de  {d.get('primer_meal_si_pasa_de')} h")
     w(f"  2do meal requerido si pasa de  {d.get('segundo_meal_si_pasa_de')} h")
     w(f"  tips no-efectivo a la columna '{d.get('columna_de_tips')}'")

@@ -19,7 +19,7 @@ from __future__ import annotations
 import csv
 import os
 import tempfile
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import toast_payroll
 
@@ -142,8 +142,10 @@ class Escenario:
         jguid = self._jobs_vistos[job]
 
         d = date.fromisoformat(dia)
-        fin_h = 16 + int(horas)
-        fin_m = int(round((horas % 1) * 60))
+        # Aritmetica de fechas de verdad: un turno largo cruza la medianoche, y
+        # armar la hora como texto daba "30:00" para un turno de 14 h.
+        inicio_dt = datetime(d.year, d.month, d.day, 16, 0, tzinfo=timezone.utc)
+        fin_dt = inicio_dt + timedelta(hours=horas)
         breaks = []
         if con_meal:
             breaks = [{
@@ -156,8 +158,8 @@ class Escenario:
         turno = {
             "guid": f"te-{guid_empleado}-{dia}-{job}",
             "businessDate": int(d.strftime("%Y%m%d")), "deleted": False,
-            "inDate": f"{dia}T16:00:00.000+0000",
-            "outDate": f"{dia}T{fin_h:02d}:{fin_m:02d}:00.000+0000",
+            "inDate": inicio_dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
+            "outDate": fin_dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000"),
             "regularHours": horas, "overtimeHours": 0.0,
             "hourlyWage": 18.0, "breaks": breaks,
             "employeeReference": {"guid": guid_empleado},

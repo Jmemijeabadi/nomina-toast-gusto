@@ -204,12 +204,19 @@ class TestContratoDelCSV(unittest.TestCase):
                                      esperada["gusto_employee_id"])
 
     def test_la_prima_nunca_pasa_de_14_horas_por_periodo(self):
-        """Tope de 1 h por dia por persona: en 14 dias, 14 h es el maximo."""
+        """La prima tiene un techo fisico, aunque ya no haya tope por dia.
+
+        Se paga una hora por violacion (decision del 2026-10-20). En un turno caben
+        a lo mas dos: una del primer meal y una del segundo. En 14 dias son 28 h.
+        Mas que eso es un error de conteo, no una persona que trabajo de mas.
+        Antes este test afirmaba 14 h por el tope de 1 h por dia; seguia pasando
+        solo porque nadie habia llegado a 14 en los datos reales.
+        """
         for nombre, filas in self.csvs:
             for fila in filas:
                 horas = float(fila.get("missed_break_hours") or 0)
                 with self.subTest(csv=nombre, quien=fila["last_name"]):
-                    self.assertLessEqual(horas, 14.0)
+                    self.assertLessEqual(horas, 28.0)
 
     def test_ninguna_fila_viene_sin_identidad(self):
         for nombre, filas in self.csvs:
@@ -1340,6 +1347,44 @@ class TestReportesCruzadosEnElMotor(unittest.TestCase):
         ruido = [a for a in r["avisos"] if a["tipo"] == "tips_sin_ubicar"]
         self.assertEqual(ruido, [], "los reportes equivocados no deben procesarse")
 
+
+
+class TestPrimaPorViolacion(unittest.TestCase):
+    """Se paga una hora por cada violacion, no una por dia.
+
+    El Labor Code 226.7 pide una hora por dia de trabajo; la nomina manual
+    pagaba una por violacion y se decidio mantenerlo para que nadie vea bajar
+    su prima. Medido en julio: con tope por dia, Dustin Delgado cobraba 4 h en
+    vez de las 6 que le pago Tany, y National City daba 15 h contra 17.
+    """
+
+    def test_dos_violaciones_el_mismo_dia_son_dos_horas(self):
+        self.assertIsNone(toast_payroll.MEAL_PREMIUM_HOURS_CAP_PER_DAY,
+                          "la regla vigente es una hora por violacion, sin tope")
+        self.assertEqual(toast_payroll.horas_de_prima(2), 2.0)
+        self.assertEqual(toast_payroll.horas_de_prima(1), 1.0)
+        self.assertEqual(toast_payroll.horas_de_prima(0), 0.0)
+
+    def test_el_tope_legal_sigue_disponible(self):
+        """Si un dia se decide volver al tope por dia, basta con cambiar el valor."""
+        original = toast_payroll.MEAL_PREMIUM_HOURS_CAP_PER_DAY
+        self.addCleanup(setattr, toast_payroll, "MEAL_PREMIUM_HOURS_CAP_PER_DAY", original)
+        toast_payroll.MEAL_PREMIUM_HOURS_CAP_PER_DAY = 1.0
+        self.assertEqual(toast_payroll.horas_de_prima(2), 1.0)
+        self.assertEqual(toast_payroll.horas_de_prima(1), 1.0)
+
+    def test_un_turno_largo_sin_descansos_paga_dos_horas_en_el_csv(self):
+        """Con el motor completo: 14 h sin primer ni segundo meal son 2 h de prima."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        quien = esc.empleado("Gaslamp Quarter", "Ejemplo", "Mara", gusto_id="p00001")
+        esc.turno(quien, "2026-09-07", horas=14.0, con_meal=False)
+        r = esc.correr(date(2026, 9, 5), date(2026, 9, 18))
+        fila = next(f for f in r["by_company"]["tacos-franc-gaslamp-llc"]
+                    if f["gusto_employee_id"] == "p00001")
+        self.assertEqual(float(fila["missed_break_hours"] or 0), 2.0,
+                         "un turno de 14 h sin descansos tiene dos violaciones y "
+                         "se pagan dos horas")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
