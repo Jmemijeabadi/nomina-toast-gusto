@@ -115,6 +115,76 @@ def exigir_acceso() -> None:
 exigir_acceso()
 
 
+# Las columnas de la vista previa: como se llaman en pantalla, de que columna del
+# CSV salen, y si son horas o dinero. El orden es el de Gusto.
+COLUMNAS_PREVIA = (
+    ("Reg", "regular_hours", "h"),
+    ("OT", "overtime_hours", "h"),
+    ("DT", "double_overtime_hours", "h"),
+    ("Prima meal", "missed_break_hours", "h"),
+    ("Tips cheque", "paycheck_tips", "$"),
+    ("Tips efectivo", "cash_tips", "$"),
+    ("Gratuity", "custom_earning_distributed_service_charges", "$"),
+)
+_HORAS = [t for t, _, u in COLUMNAS_PREVIA if u == "h"]
+_DINERO = [t for t, _, u in COLUMNAS_PREVIA if u == "$"]
+
+
+def _numero(valor):
+    """El CSV trae texto; vacio es None, no cero, para que se vea distinto."""
+    texto = (valor or "").strip()
+    if not texto:
+        return None
+    try:
+        return float(texto)
+    except ValueError:
+        return None
+
+
+def puesto_limpio(fila: dict) -> str:
+    return fila["title"].replace(" (Primary)", "").strip()
+
+
+def _marcar_efectivo(valor):
+    """Rojo para efectivo en un puesto que no lo recibe. Semitransparente para
+    que se lea en tema claro y oscuro."""
+    if valor is not None and valor == valor and valor > 0.005:
+        return "background-color: rgba(220, 38, 38, 0.22); font-weight: 700"
+    return ""
+
+
+def tabla_previa(filas: list, marcar_efectivo: bool = False) -> None:
+    """Pinta renglones tal como entran a Gusto, ordenados por persona."""
+    if not filas:
+        st.caption("— ninguno —")
+        return
+    ordenadas = sorted(filas, key=lambda f: (f["last_name"], f["first_name"],
+                                             "(Primary)" not in f["title"]))
+    marco = pd.DataFrame([{
+        "Empleado": f"{f['last_name']}, {f['first_name']}",
+        "Puesto": f["title"],
+        **{titulo: _numero(f[col]) for titulo, col, _ in COLUMNAS_PREVIA},
+    } for f in ordenadas])
+    estilo = (marco.style
+              .format("{:,.2f}", subset=_HORAS, na_rep="")
+              .format("${:,.2f}", subset=_DINERO, na_rep=""))
+    if marcar_efectivo:
+        estilo = estilo.map(_marcar_efectivo, subset=["Tips efectivo"])
+    st.dataframe(estilo, hide_index=True, width="stretch")
+
+
+def tabla_totales(filas: list) -> None:
+    """Una sola fila con el total de cada columna, alineada con la vista previa."""
+    totales = {"": "TOTAL"}
+    for titulo, col, _ in COLUMNAS_PREVIA:
+        totales[titulo] = sum(_numero(f[col]) or 0.0 for f in filas)
+    marco = pd.DataFrame([totales])
+    estilo = (marco.style
+              .format("{:,.2f}", subset=_HORAS)
+              .format("${:,.2f}", subset=_DINERO))
+    st.dataframe(estilo, hide_index=True, width="stretch")
+
+
 def huella_de_entradas(inicio, fin, subidos: dict) -> tuple:
     """Lo que determina un resultado: el periodo y QUE archivos se subieron."""
     archivos = tuple(sorted(
@@ -548,50 +618,53 @@ if resultado and vigente:
                 } for empresa, f in secundarios]), hide_index=True,
                     width="stretch")
 
-    # ── 4. resumen ──
+    # ── 4. asi entra a Gusto ──
+    # La vista previa es la seccion principal, no un detalle escondido: es lo
+    # que la persona revisa antes de subir. Sale de los MISMOS renglones que se
+    # escriben en el CSV, asi que lo que se ve es exactamente lo que entra.
     if filas_por_empresa:
-        st.markdown("#### Resumen")
-        conceptos = [
-            ("Horas regulares", "regular_hours", "h"),
-            ("Overtime", "overtime_hours", "h"),
-            ("Double time", "double_overtime_hours", "h"),
-            ("Prima de meal", "missed_break_hours", "h"),
-            ("Tips al cheque", "paycheck_tips", "$"),
-            ("Tips en efectivo", "cash_tips", "$"),
-            ("Gratuity repartido", "custom_earning_distributed_service_charges", "$"),
-        ]
-        renglones = []
-        for etiqueta, col, unidad in conceptos:
-            fila = {"": etiqueta}
-            for company, filas in filas_por_empresa.items():
-                valor = sum(float(f[col] or 0) for f in filas)
-                fila[NOMBRE_EMPRESA.get(company, company)] = (
-                    money(valor) if unidad == "$" else f"{valor:,.2f}")
-            renglones.append(fila)
-        st.dataframe(pd.DataFrame(renglones), hide_index=True, width="stretch")
+        st.markdown("#### Asi entra a Gusto")
+        st.caption("Un renglon por puesto, tal cual trae el archivo. Las celdas "
+                   "vacias no tocan nada en Gusto: dejan el valor que ya tenga.")
+
+        pestanas = st.tabs([NOMBRE_EMPRESA.get(c, c) for c in filas_por_empresa])
+        for pestana, (company, filas) in zip(pestanas, filas_por_empresa.items()):
+            with pestana:
+                con_dato = [f for f in filas
+                            if any((f[c] or "") for c in COLUMNAS_CON_DATO)]
+                vacios = len(filas) - len(con_dato)
+                puestos_efectivo = gusto_export.PUESTOS_CON_EFECTIVO.get(company, set())
+
+                if puestos_efectivo:
+                    recibe = [f for f in con_dato
+                              if puesto_limpio(f).lower() in puestos_efectivo]
+                    resto = [f for f in con_dato
+                             if puesto_limpio(f).lower() not in puestos_efectivo]
+
+                    st.markdown(f"**💵 Reciben tips en efectivo** — "
+                                f"{', '.join(sorted(p.title() for p in puestos_efectivo))} "
+                                f"· {len(recibe)} renglones")
+                    tabla_previa(recibe)
+
+                    st.markdown(f"**Solo tips al cheque** — el resto de los puestos "
+                                f"· {len(resto)} renglones")
+                    # La columna de efectivo se queda aunque normalmente venga
+                    # vacia: quitarla haria INVISIBLE el efectivo que cayera en un
+                    # puesto que no lo recibe, que es justo lo que hay que ver.
+                    tabla_previa(resto, marcar_efectivo=True)
+                else:
+                    st.caption("En esta empresa nadie recibe tips en efectivo.")
+                    tabla_previa(con_dato, marcar_efectivo=True)
+
+                st.markdown("**Totales del archivo**")
+                tabla_totales(filas)
+                if vacios:
+                    st.caption(f"{vacios} renglon(es) del roster de Gusto vienen "
+                               f"completamente vacios y no se muestran: no tocan "
+                               f"nada en Gusto.")
 
     # ── 5. detalle, todo cerrado ──
     st.markdown("#### Detalle")
-
-    for company, filas in filas_por_empresa.items():
-        con_dato = [f for f in filas if any((f[c] or "") for c in COLUMNAS_CON_DATO)]
-        previa = [{
-            "Empleado": f"{f['last_name']}, {f['first_name']}",
-            "Puesto": f["title"],
-            "Reg": f["regular_hours"] or "",
-            "OT": f["overtime_hours"] or "",
-            "DT": f["double_overtime_hours"] or "",
-            "Prima": f["missed_break_hours"] or "",
-            "Tips cheque": f["paycheck_tips"] or "",
-            "Tips efectivo": f["cash_tips"] or "",
-            "Gratuity": f["custom_earning_distributed_service_charges"] or "",
-        } for f in sorted(con_dato, key=lambda x: (x["last_name"], x["first_name"],
-                                                   "(Primary)" not in x["title"]))]
-        with st.expander(f"Renglon por renglon — {NOMBRE_EMPRESA.get(company, company)} "
-                         f"({len(previa)})"):
-            st.caption("Asi lo recibe Gusto: un renglon por puesto. Los campos "
-                       "en blanco NO tocan nada en Gusto.")
-            st.dataframe(pd.DataFrame(previa), hide_index=True, width="stretch")
 
     with st.expander("Como cuadran las cuentas"):
         st.caption("Todo lo que entra tiene que salir: al CSV, a retenidos, o a "

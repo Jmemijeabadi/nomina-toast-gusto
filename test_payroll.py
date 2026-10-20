@@ -1114,6 +1114,97 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertIn("revisa", veredicto.value)
         self.assertEqual(len(botones), 2, "una descarga por empresa")
 
+    def _tablas(self, resultado):
+        """Las tablas de la vista previa y de totales, tal como se pintaron."""
+        from streamlit.testing.v1 import AppTest
+        anterior = os.environ.get("APP_PASSWORD")
+        os.environ["APP_PASSWORD"] = "prueba"
+        self.addCleanup(lambda: os.environ.__setitem__("APP_PASSWORD", anterior)
+                        if anterior is not None else os.environ.pop("APP_PASSWORD", None))
+        at = AppTest.from_file("app.py", default_timeout=180)
+        at.session_state["acceso_ok"] = True
+        at.run()
+        sel = at.selectbox[0]
+        sel.set_value(next(i for i, o in enumerate(sel.options) if "05 Sep" in str(o)))
+        at.run()
+        at.session_state["resultado"] = resultado
+        at.session_state["huella"] = (self.INICIO, self.FIN, ())
+        at.run()
+        self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
+        marcos = [(t.value.data if hasattr(t.value, "data") else t.value) for t in at.dataframe]
+        previas = [m for m in marcos if "Empleado" in m.columns]
+        totales = [m for m in marcos if "" in m.columns and "Reg" in m.columns]
+        return previas, totales
+
+    def test_la_vista_previa_muestra_cada_renglon_una_sola_vez(self):
+        """Ningun renglon del CSV se pierde ni se duplica al separar efectivo."""
+        previas, _ = self._tablas(self.base)
+        recibe, resto = previas[0], previas[1]
+        bonita = self.base["by_company"]["tacos-franc-bonita-llc"]
+        cols = ("regular_hours", "overtime_hours", "double_overtime_hours",
+                "missed_break_hours", "paycheck_tips", "cash_tips",
+                "custom_earning_distributed_service_charges")
+        con_dato = [f for f in bonita if any((f[c] or "") for c in cols)]
+        self.assertEqual(len(recibe) + len(resto), len(con_dato),
+                         "la vista previa no muestra exactamente los renglones del CSV")
+
+        efectivo = gusto_export.PUESTOS_CON_EFECTIVO["tacos-franc-bonita-llc"]
+        for p in recibe["Puesto"]:
+            self.assertIn(p.replace(" (Primary)", "").lower(), efectivo,
+                          f"'{p}' no recibe efectivo y quedo en esa tabla")
+        for p in resto["Puesto"]:
+            self.assertNotIn(p.replace(" (Primary)", "").lower(), efectivo,
+                             f"'{p}' recibe efectivo y quedo en 'solo cheque'")
+
+    def test_los_totales_de_pantalla_son_los_del_archivo(self):
+        _, totales = self._tablas(self.base)
+        bonita = self.base["by_company"]["tacos-franc-bonita-llc"]
+        en_pantalla = totales[0].iloc[0]
+        pares = (("Reg", "regular_hours"), ("OT", "overtime_hours"),
+                 ("Tips cheque", "paycheck_tips"), ("Tips efectivo", "cash_tips"))
+        for titulo, col in pares:
+            archivo = sum(float(f[col]) if (f[col] or "").strip() else 0.0 for f in bonita)
+            self.assertAlmostEqual(float(en_pantalla[titulo]), archivo, places=2,
+                                   msg=f"el total de '{titulo}' en pantalla no es el del CSV")
+
+    def test_el_efectivo_en_un_puesto_que_no_lo_recibe_se_ve(self):
+        """Si la columna se quitara de 'solo cheque', ese dinero seria invisible."""
+        import copy
+        r = copy.deepcopy(self.base)
+        victima = next(f for f in r["by_company"]["tacos-franc-bonita-llc"]
+                       if f["title"].startswith("Taquero") and (f["regular_hours"] or ""))
+        victima["cash_tips"] = "45.00"
+        previas, _ = self._tablas(r)
+        resto = previas[1]
+        self.assertIn("Tips efectivo", resto.columns,
+                      "la tabla 'solo cheque' perdio la columna de efectivo")
+        fila = resto[resto["Empleado"].str.startswith(victima["last_name"])]
+        self.assertEqual(len(fila), 1)
+        self.assertAlmostEqual(float(fila.iloc[0]["Tips efectivo"]), 45.0, places=2)
+
+
+class TestMarcaDeEfectivo(unittest.TestCase):
+    """El rojo va SOLO en efectivo distinto de cero. Se prueba la funcion real,
+    sacada de app.py sin correr la app."""
+
+    def test_solo_marca_lo_que_trae_dinero(self):
+        import ast
+        import pandas as pd
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
+                   encoding="utf-8").read()
+        arbol = ast.parse(src)
+        codigo = "\n".join(ast.get_source_segment(src, n) for n in arbol.body
+                           if isinstance(n, ast.FunctionDef)
+                           and n.name in ("_numero", "_marcar_efectivo"))
+        ns = {}
+        exec(codigo, ns)
+        df = pd.DataFrame({"Tips efectivo": [45.0, 0.0, None]})
+        estilo = df.style.map(ns["_marcar_efectivo"], subset=["Tips efectivo"])
+        estilo._compute()
+        marcadas = {fila for (fila, _), css in estilo.ctx.items() if css}
+        self.assertEqual(marcadas, {0}, "solo el renglon con $45 debe ir en rojo")
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
