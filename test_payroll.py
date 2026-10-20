@@ -1048,5 +1048,72 @@ class TestElDiagnosticoMideElPeriodo(unittest.TestCase):
                          "solo 2 de los 5 turnos caen en el periodo")
 
 
+class TestLaPantallaDeResultados(unittest.TestCase):
+    """El veredicto y las descargas, que es lo que se usa casi siempre.
+
+    La pantalla se reorganizo porque la descarga estaba en el paso 6 de 7 y el
+    veredicto hasta el final. Este test corre app.py de verdad con un resultado
+    real y fija lo que no se puede romper: que haya veredicto, que diga lo
+    correcto en cada caso, y que un resultado bloqueado NO ofrezca descargas —
+    bajar un archivo roto por accidente es justo lo que el candado evita.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+
+    @classmethod
+    def setUpClass(cls):
+        if not (os.environ.get("TOAST_CLIENT_ID") and os.environ.get("TOAST_CLIENT_SECRET")):
+            raise unittest.SkipTest("sin credenciales de Toast")
+        import importlib.util
+        if importlib.util.find_spec("streamlit.testing.v1") is None:
+            raise unittest.SkipTest("esta version de streamlit no trae AppTest")
+        rep = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
+        nc = os.path.join(rep, "tips_NC_2026-09-05_2026-09-18.csv")
+        gl = os.path.join(rep, "tips_GL_2026-09-05_2026-09-18.csv")
+        if not (os.path.exists(nc) and os.path.exists(gl)):
+            raise unittest.SkipTest("faltan los reportes de tips de referencia")
+        cls.base = gusto_export.build(
+            toast_payroll.ToastClient.from_env(), cls.INICIO, cls.FIN, {
+                "tacos-franc-bonita-llc": gusto_export.load_tip_report(nc),
+                "tacos-franc-gaslamp-llc": gusto_export.load_tip_report(gl)})
+
+    def _pintar(self, resultado):
+        from streamlit.testing.v1 import AppTest
+        anterior = os.environ.get("APP_PASSWORD")
+        os.environ["APP_PASSWORD"] = "prueba"
+        self.addCleanup(lambda: os.environ.__setitem__("APP_PASSWORD", anterior)
+                        if anterior is not None else os.environ.pop("APP_PASSWORD", None))
+        at = AppTest.from_file("app.py", default_timeout=180)
+        at.session_state["acceso_ok"] = True
+        at.run()
+        sel = at.selectbox[0]
+        sel.set_value(next(i for i, o in enumerate(sel.options) if "05 Sep" in str(o)))
+        at.run()
+        at.session_state["resultado"] = resultado
+        at.session_state["huella"] = (self.INICIO, self.FIN, ())
+        at.run()
+        self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
+        veredicto = next((e for e in at.main if type(e).__name__ in ("Error", "Warning", "Success")
+                          and "###" in (getattr(e, "value", "") or "")), None)
+        botones = [b for b in at.get("download_button") if "⬇" in (b.label or "")]
+        return veredicto, botones
+
+    def test_bloqueado_no_ofrece_descargas(self):
+        import copy
+        r = copy.deepcopy(self.base)
+        r["problems"] = ["Cierre de HORAS: faltan 12.00 h sin explicar"]
+        r["hours_held"] -= 12.0
+        veredicto, botones = self._pintar(r)
+        self.assertEqual(type(veredicto).__name__, "Error")
+        self.assertIn("No subas", veredicto.value)
+        self.assertEqual(botones, [], "un resultado bloqueado no debe dejar bajar nada")
+
+    def test_con_pendientes_avisa_y_ofrece_las_dos_descargas(self):
+        veredicto, botones = self._pintar(self.base)
+        self.assertEqual(type(veredicto).__name__, "Warning")
+        self.assertIn("revisa", veredicto.value)
+        self.assertEqual(len(botones), 2, "una descarga por empresa")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
