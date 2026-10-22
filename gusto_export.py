@@ -101,6 +101,7 @@ GRUPOS_DE_AVISO = {
     "retenido_tips_sin_identidad":     "alta_en_gusto",
     "confirmar_identidad":             "identidad",
     "retenido_homonimo":               "identidad",
+    "persona_en_empresa_sin_procesar": "identidad",
     "tips_sin_dueno":                  "tips",
     "tips_sin_ubicar":                 "tips",
     "sin_tips_del_pool":               "tips",
@@ -155,6 +156,16 @@ PUESTOS_CON_EFECTIVO = {
 
 # La prima de meal nunca se escribe como monto: ver el docstring.
 MEAL_PREMIUM_COLUMN = "missed_break_hours"
+
+
+# Lo que cuenta como "si" en persona_confirmada. En un solo lugar para que la
+# suma de horas entre empresas y el candado de una sola empresa lean la columna
+# igual, y igual que confirmaciones.py, que acepta tambien "sí" con acento.
+CONFIRMACIONES_AFIRMATIVAS = ("si", "sí", "s", "yes", "true", "1")
+
+
+def es_confirmacion(valor: str) -> bool:
+    return (valor or "").strip().lower() in CONFIRMACIONES_AFIRMATIVAS
 
 
 def norm(value: str) -> str:
@@ -342,9 +353,24 @@ def blank_or(value: float, decimals: int = 2) -> str:
 
 
 def build(client: ToastClient, start: date, end_inclusive: date,
-          tip_reports: dict) -> dict:
-    """Arma las filas del CSV de Gusto por empresa."""
-    locations = resolve_locations(client)
+          tip_reports: dict, companias: set | None = None) -> dict:
+    """Arma las filas del CSV de Gusto por empresa.
+
+    `companias`: si se da, solo se procesan esas empresas — normalmente las que
+    tienen su reporte de tips. Asi se puede generar el archivo de una sucursal
+    sin esperar el reporte de la otra. Con None se procesan todas.
+
+    Lo que NO se hace es generar el archivo de una empresa sin su reporte: saldria
+    con las columnas de tips vacias, y si alguien lo sube a Gusto pensando que
+    esta completo, esa gente cobra sin sus tips esa quincena y nadie se entera.
+    """
+    todas_las_locations = resolve_locations(client)
+    # Las sucursales SIN empresa de Gusto se revisan siempre: el aviso de que
+    # tienen horas que no van a ningun lado no depende de que reportes se subieron.
+    locations = [l for l in todas_las_locations
+                 if companias is None or not l["configured"] or l["company"] in companias]
+    procesadas = {l["guid"] for l in locations}
+    sin_procesar = [l for l in todas_las_locations if l["guid"] not in procesadas]
     employee_map = load_employee_map()
     job_map = load_job_map()
 
@@ -379,6 +405,36 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "Leelo en Gusto > Pay > Pay settings y ponlo en ca_overtime.py: "
             "de ese valor dependen las 40 horas semanales y el septimo dia."
         )
+
+    # Con una sola empresa, quien esta confirmado como la misma persona en las
+    # dos no se puede calcular: su overtime de California se mide con las horas
+    # de las DOS, y las de la empresa que no se procesa no se leen. Con la mitad
+    # de sus horas le saldria menos overtime y nada lo diria. Hoy nadie esta
+    # confirmado; el dia que alguien lo este, se piden los dos reportes en lugar
+    # de pagarle mal.
+    if sin_procesar:
+        empresa_de = {l["short"]: l["company"]
+                      for l in todas_las_locations if l["configured"]}
+        empresas_procesadas = {l["company"] for l in locations if l["configured"]}
+        empresas_por_persona = defaultdict(set)
+        nombre_de = {}
+        for fila in employee_map.values():
+            clave = fila.get("person_key") or ""
+            empresa = empresa_de.get(fila.get("toast_location") or "")
+            if clave and empresa and es_confirmacion(fila.get("persona_confirmada")):
+                empresas_por_persona[clave].add(empresa)
+                nombre_de.setdefault(clave, fila.get("toast_name") or clave)
+        for clave, empresas in sorted(empresas_por_persona.items()):
+            faltan = empresas - empresas_procesadas
+            if faltan and empresas & empresas_procesadas:
+                sucursales = ", ".join(sorted(
+                    l["short"] for l in sin_procesar if l["company"] in faltan))
+                avisar("bloquea", "persona_en_empresa_sin_procesar",
+                    f"Los registros de {nombre_de[clave]} en las dos empresas estan "
+                    f"confirmados como la misma persona, asi que su overtime se "
+                    f"calcula con las horas de las dos. Sube tambien el reporte de "
+                    f"tips de {sucursales} y vuelve a generar: con una sola, le "
+                    f"saldria menos overtime.")
 
     # Paso 1: auditar los turnos del periodo, con 7 dias de contexto previo para
     # poder ver rachas de 7 dias consecutivos que arrancan antes del periodo.
@@ -480,7 +536,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         employee = employees.get(guid) or {}
         clave = employee.get("person_key") or ""
         confirmada = (employee.get("persona_confirmada") or "").strip().lower()
-        if clave and confirmada in ("si", "s", "yes", "true", "1"):
+        if clave and es_confirmacion(confirmada):
             return f"PERSONA::{clave}"
         if clave and confirmada:
             sin_confirmar[clave] = employee.get("display", guid)
@@ -767,6 +823,19 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             if primero:
                 plantillas[empleado["location"]].add(
                     tokens_de_nombre(f"{primero} {empleado['last_name']}"))
+    # Las sucursales que no se procesan tambien cuentan. Con una sola plantilla
+    # la propia siempre "gana", y un reporte de la otra sucursal pasaria como
+    # bueno: sus tips se intentarian ubicar en la gente equivocada.
+    for location in sin_procesar:
+        if not location["configured"]:
+            continue
+        for empleado in client.get_employees(location["guid"]):
+            apellido = (empleado.get("lastName") or "").strip()
+            for primero in (empleado.get("firstName"), empleado.get("chosenName")):
+                primero = (primero or "").strip()
+                if primero:
+                    plantillas[location["short"]].add(
+                        tokens_de_nombre(f"{primero} {apellido}"))
     reportes_ajenos = {}
     for location in locations:
         if not location["configured"]:
@@ -785,17 +854,18 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             for asignada, (real, _) in reportes_ajenos.items()))
         if cruzados:
             avisar("bloquea", "reporte_de_otra_sucursal",
-                "Los dos reportes de tips se subieron AL REVES: el de cada sucursal "
-                "quedo en la casilla de la otra. Toast los baja con el mismo nombre "
-                "de archivo, asi que es facil cruzarlos. Cambialos de casilla y "
-                "vuelve a generar.")
+                "Los dos reportes de tips quedaron AL REVES: el de cada sucursal "
+                "se asigno a la otra. Toast los baja con el mismo nombre de "
+                "archivo, asi que es facil cruzarlos. Vuelve a elegir la sucursal "
+                "de cada uno y genera otra vez.")
         else:
             for asignada, (real, coincidencia) in sorted(reportes_ajenos.items()):
                 avisar("bloquea", "reporte_de_otra_sucursal",
                     f"El reporte de tips que se subio como {asignada} es de {real}: "
                     f"{coincidencia[real]:.0%} de sus personas son de {real} y solo "
-                    f"{coincidencia[asignada]:.0%} de {asignada}. Sube el reporte "
-                    f"correcto en esa casilla y vuelve a generar.")
+                    f"{coincidencia[asignada]:.0%} de {asignada}. Elige bien la "
+                    f"sucursal de ese archivo, o sube el de {asignada}, y vuelve "
+                    f"a generar.")
         # No se procesan: si se procesaran, cada persona saldria como un aviso
         # aparte y el mensaje de arriba quedaria enterrado.
         companias_ajenas = {loc["company"] for loc in locations
@@ -1313,6 +1383,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         "reportes_de_tips_recibidos": {
             comp: len(filas or []) for comp, filas in sorted((tip_reports or {}).items())},
         "por_sucursal": diag_loc,
+        "companias_sin_procesar": [l["company"] for l in sin_procesar],
     }
 
     return {"by_company": output, "problems": sorted(set(problems)),
@@ -1329,6 +1400,9 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "tips_no_persona": tips_no_persona,
             "warnings": sorted(set(warnings)), "held_back": held_back,
             "avisos": avisos,
+            # Empresas que esta corrida NO genero porque no se subio su reporte
+            # de tips. La pantalla lo dice para que nadie crea que ya acabo.
+            "companias_sin_procesar": [l["company"] for l in sin_procesar],
             "diagnostico": diagnostico}
 
 
@@ -1367,6 +1441,8 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
             w(f"  reporte de tips             {comp}: {n} renglones")
     else:
         w("  reporte de tips             NINGUNO (las columnas de tips van vacias)")
+    for comp in d.get("companias_sin_procesar") or []:
+        w(f"  NO SE PROCESO               {comp} (no se subio su reporte de tips)")
 
     w("")
     w("POR SUCURSAL")

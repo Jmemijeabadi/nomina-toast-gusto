@@ -73,9 +73,12 @@ class Escenario:
     """Arma empleados, turnos, mapeo y templates, y corre el exportador."""
 
     def __init__(self):
-        self._empleados = {g: [] for g in GUIDS.values()}
+        # Por escenario, para poder agregar una sucursal sin empresa de Gusto
+        # sin tocar las de los demas tests.
+        self._guids = dict(GUIDS)
+        self._empleados = {g: [] for g in self._guids.values()}
         self._turnos = {}
-        self._jobs = {g: [] for g in GUIDS.values()}
+        self._jobs = {g: [] for g in self._guids.values()}
         self._jobs_vistos = {}
         self._mapa = []          # filas de employee_map.csv
         self._templates = {}     # {company: [fila, ...]}
@@ -91,13 +94,26 @@ class Escenario:
 
     # ── armar el escenario ──
 
+    def sucursal_sin_empresa(self, nombre):
+        """Una location que Toast reporta y Gusto no conoce, como Fresno."""
+        guid = f"loc-sin-empresa-{len(self._guids):02d}"
+        self._guids[nombre] = guid
+        self._empleados[guid] = []
+        self._jobs[guid] = list(next(iter(self._jobs.values()), []))
+        return guid
+
     def empleado(self, sucursal, apellido, nombre, *, gusto_id=None,
                  accion="", telefono="", email="", en_template=True,
-                 chosen=None, borrado=False, job="Taquero"):
-        """Agrega un empleado de Toast y, si se pide, su renglon de Gusto."""
+                 chosen=None, borrado=False, job="Taquero",
+                 person_key="", confirmada=""):
+        """Agrega un empleado de Toast y, si se pide, su renglon de Gusto.
+
+        `person_key` y `confirmada` son las columnas del mapeo que dicen si dos
+        registros de Toast son la misma persona y si un humano lo confirmo.
+        """
         self._n += 1
         guid = f"emp-{self._n:04d}"
-        loc = GUIDS[sucursal]
+        loc = self._guids[sucursal]
         self._empleados[loc].append({
             "guid": guid, "lastName": apellido, "firstName": nombre,
             "chosenName": chosen, "email": email, "phoneNumber": telefono,
@@ -108,7 +124,7 @@ class Escenario:
             "toast_guid": guid, "toast_location": sucursal,
             "toast_name": f"{apellido}, {chosen or nombre}",
             "toast_email": email, "toast_phone": telefono,
-            "person_key": "", "persona_confirmada": "",
+            "person_key": person_key, "persona_confirmada": confirmada,
             "gusto_employee_id": gusto_id or "", "gusto_name": "",
             "confianza": "exacto" if gusto_id else "", "accion": accion, "nota": "",
         })
@@ -120,7 +136,7 @@ class Escenario:
     def renglon_de_gusto(self, sucursal, apellido, nombre, gusto_id, *,
                          job="Taquero", primario=False):
         """Un renglon del template de Gusto para esa empresa."""
-        company = toast_payroll.GUSTO_COMPANIES[GUIDS[sucursal]]["company"]
+        company = toast_payroll.GUSTO_COMPANIES[self._guids[sucursal]]["company"]
         titulo = f"{job} (Primary)" if primario else job
         self._templates.setdefault(company, []).append({
             "last_name": apellido, "first_name": nombre, "title": titulo,
@@ -130,7 +146,7 @@ class Escenario:
     def turno(self, guid_empleado, dia, *, horas=8.0, job="Taquero",
               con_meal=False, sucursal=None):
         """Un turno. `dia` es 'YYYY-MM-DD'."""
-        loc = GUIDS[sucursal] if sucursal else next(
+        loc = self._guids[sucursal] if sucursal else next(
             g for g, lista in self._empleados.items()
             if any(e["guid"] == guid_empleado for e in lista))
 
@@ -210,7 +226,7 @@ class Escenario:
                                     "gusto_title": job, "confianza": "exacto"})
         return ruta_mapa
 
-    def correr(self, inicio, fin, tip_reports=None):
+    def correr(self, inicio, fin, tip_reports=None, companias=None):
         """Corre gusto_export.build contra este escenario."""
         import gusto_export
         self._escribir()
@@ -222,7 +238,8 @@ class Escenario:
         toast_payroll.EMPLOYEE_MAP_PATH = ""
         try:
             cliente = ClienteFalso(self._empleados, self._turnos, self._jobs)
-            return gusto_export.build(cliente, inicio, fin, tip_reports or {})
+            return gusto_export.build(cliente, inicio, fin, tip_reports or {},
+                                      companias=companias)
         finally:
             toast_payroll.DATA_DIR = anterior_dir
             toast_payroll.EMPLOYEE_MAP_PATH = anterior_mapa

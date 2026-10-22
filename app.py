@@ -410,8 +410,9 @@ con_empresa = [l for l in locations if l["configured"]]
 st.subheader("2. Sube los reportes de tips")
 st.caption("En Toast Web: **Reports → Labor → Tip management**, vista **By Day**, "
            f"con el rango **{inicio:%Y-%m-%d}** a **{fin:%Y-%m-%d}**, una vez por "
-           f"sucursal. **Suelta los {len(con_empresa)} archivos aqui juntos:** no "
-           f"importa como se llamen, la herramienta reconoce de que sucursal es cada uno.")
+           f"sucursal. **Suelta los archivos aqui juntos:** no importa como se "
+           f"llamen, la herramienta reconoce de que sucursal es cada uno. Si solo "
+           f"tienes el de una sucursal, sube ese y se genera nada mas esa.")
 
 # UNA casilla para todos, y la sucursal se reconoce por el CONTENIDO.
 #
@@ -428,6 +429,11 @@ archivos = st.file_uploader("Reportes EmployeeTipTotals", type=["csv"],
 
 compania_de = {l["short"]: l["company"] for l in con_empresa}
 subidos = {}
+# Archivos que se subieron pero no se pueden usar. Mientras haya uno, no se
+# genera: con un solo reporte ya se puede generar esa sucursal, y sin este
+# candado un archivo malo de la otra se quedaba fuera sin que nadie lo notara
+# —quien subio dos espera dos archivos de Gusto, no uno—.
+con_problema = []
 if archivos:
     plantillas = plantillas_por_sucursal()
     for archivo in archivos:
@@ -435,12 +441,14 @@ if archivos:
         if rango and rango != (inicio, fin):
             st.error(f"**{archivo.name}** es del {rango[0]:%d %b} al {rango[1]:%d %b}, "
                      f"no del periodo elegido. Bajalo de nuevo con el rango correcto.")
+            con_problema.append(archivo.name)
             continue
         try:
             filas = gusto_export.load_tip_report(archivo)
         except Exception as error:
             st.error(f"**{archivo.name}** no parece un reporte EmployeeTipTotals de "
                      f"Toast: {error}")
+            con_problema.append(archivo.name)
             continue
         finally:
             archivo.seek(0)        # se vuelve a leer al generar
@@ -459,6 +467,7 @@ if archivos:
                                     key=f"suc_{archivo.name}_{archivo.size}",
                                     label_visibility="collapsed")
             if eleccion == "—":
+                con_problema.append(archivo.name)
                 continue
             sucursal = next(s for s in compania_de
                             if NOMBRE_EMPRESA.get(compania_de[s], s) == eleccion)
@@ -466,9 +475,13 @@ if archivos:
         compania = compania_de[sucursal]
         nombre = NOMBRE_EMPRESA.get(compania, sucursal)
         if compania in subidos:
+            # No se elige uno: pueden ser dos descargas distintas del mismo
+            # reporte y no hay forma de saber cual es la buena.
             st.error(f"Subiste **dos** reportes de **{nombre}** "
-                     f"({subidos[compania].name} y {archivo.name}). Falta el de la "
-                     f"otra sucursal.")
+                     f"({subidos[compania].name} y {archivo.name}). Quita uno. Si "
+                     f"uno de los dos era el de la otra sucursal, bajalo otra vez "
+                     f"de Toast.")
+            con_problema.append(archivo.name)
             continue
         subidos[compania] = archivo
         st.success(f"**{nombre}** ← {archivo.name}")
@@ -476,24 +489,32 @@ if archivos:
             st.caption("No pude leer las fechas del nombre; confirma que sea el "
                        "del periodo correcto.")
 
+# Solo se generan las sucursales con su reporte. La que no lo tiene NO sale con
+# los tips en blanco: ese archivo se veria completo, y si alguien lo sube a
+# Gusto esa gente cobra la quincena sin sus tips. Queda pendiente y se dice.
 faltantes = [NOMBRE_EMPRESA.get(l["company"], l["short"]) for l in con_empresa
              if l["company"] not in subidos]
-if faltantes:
-    st.info(f"Falta el reporte de: **{', '.join(faltantes)}**. Sin el, las "
-            f"columnas de tips saldrian vacias.")
+if con_problema:
+    st.warning("Quita o corrige los archivos marcados en rojo para poder generar.")
+elif subidos and faltantes:
+    van = [NOMBRE_EMPRESA.get(c, c) for c in sorted(subidos)]
+    st.info(f"Se va a generar solo **{', '.join(van)}**. "
+            f"**{', '.join(faltantes)}** queda pendiente: cuando tengas su "
+            f"reporte, subelo aqui y vuelve a generar.")
 
 
 # ───────────────────────────── paso 3: generar ─────────────────────────────
 
 st.subheader("3. Genera los CSV")
 
-if st.button("Generar", type="primary", disabled=bool(faltantes),
+if st.button("Generar", type="primary", disabled=not subidos or bool(con_problema),
              width="stretch"):
     try:
         reportes = {company: gusto_export.load_tip_report(archivo)
                     for company, archivo in subidos.items()}
         with st.spinner("Leyendo Toast y calculando…"):
-            resultado = gusto_export.build(get_client(), inicio, fin, reportes)
+            resultado = gusto_export.build(get_client(), inicio, fin, reportes,
+                                           companias=set(subidos))
         # Los CSV se escriben a un temporal para que los tests del contrato
         # puedan verificarlos de verdad desde la barra lateral.
         import csv as _c, tempfile
@@ -582,10 +603,16 @@ if resultado and vigente:
     # ── 1. veredicto ──
     periodo_txt = f"{inicio:%d %b} – {fin:%d %b %Y}"
     if bloqueado:
-        st.error(f"### ❌ No subas estos archivos\n"
-                 f"Periodo {periodo_txt}. Hay horas o tips que no se pudieron "
-                 f"explicar: el archivo saldria incompleto y en Gusto se veria "
-                 f"completo. Abajo dice cuanto y donde.")
+        if cuadra:
+            # Un candado que no es de cuadre (un reporte de la sucursal
+            # equivocada, alguien que necesita los dos reportes): decir "no se
+            # pudieron explicar" mandaria a buscar un descuadre que no existe.
+            motivo = "Hay algo que corregir antes:"
+        else:
+            motivo = ("Hay horas o tips que no se pudieron explicar: el archivo "
+                      "saldria incompleto y en Gusto se veria completo. Abajo dice "
+                      "cuanto y donde.")
+        st.error(f"### ❌ No subas estos archivos\nPeriodo {periodo_txt}. {motivo}")
         for problema in resultado["problems"]:
             st.markdown(f"- {problema}")
     elif pendientes:
@@ -596,6 +623,16 @@ if resultado and vigente:
         st.success(f"### ✅ Listos para subir a Gusto\n"
                    f"Periodo {periodo_txt}. Las cuentas cuadran y no hay nada "
                    f"pendiente.")
+
+    # Una corrida de una sola sucursal no es la nomina completa, y el veredicto
+    # de arriba no lo dice. Sin esto, "Listos" se lee como "ya acabe".
+    sin_procesar = [NOMBRE_EMPRESA.get(c, c)
+                    for c in resultado.get("companias_sin_procesar") or []]
+    if sin_procesar:
+        hechas = [NOMBRE_EMPRESA.get(c, c) for c in filas_por_empresa]
+        st.info(f"Esta corrida es solo de **{', '.join(hechas) or '—'}**. "
+                f"**{', '.join(sin_procesar)}** no se genero porque no se subio su "
+                f"reporte de tips.")
 
     # ── 2. descargas ──
     if not bloqueado and filas_por_empresa:

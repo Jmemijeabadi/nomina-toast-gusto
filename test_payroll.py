@@ -1228,6 +1228,54 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertEqual(len(fila), 1)
         self.assertAlmostEqual(float(fila.iloc[0]["Tips efectivo"]), 45.0, places=2)
 
+    def _app_con_reportes(self, archivos):
+        """La app de verdad, con estos archivos subidos. Devuelve (app, Generar)."""
+        from streamlit.testing.v1 import AppTest
+        if not hasattr(AppTest, "file_uploader"):
+            self.skipTest("esta version de streamlit no simula subir archivos")
+        anterior = os.environ.get("APP_PASSWORD")
+        os.environ["APP_PASSWORD"] = "prueba"
+        self.addCleanup(lambda: os.environ.__setitem__("APP_PASSWORD", anterior)
+                        if anterior is not None else os.environ.pop("APP_PASSWORD", None))
+        at = AppTest.from_file("app.py", default_timeout=300)
+        at.session_state["acceso_ok"] = True
+        at.run()
+        sel = at.selectbox[0]
+        sel.set_value(next(i for i, o in enumerate(sel.options) if "05 Sep" in str(o)))
+        at.run()
+        if archivos:
+            at.file_uploader[0].set_value(archivos)
+            at.run()
+        self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
+        return at, next(b for b in at.button if b.label == "Generar")
+
+    @staticmethod
+    def _archivo(prefijo):
+        rep = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reference")
+        with open(os.path.join(rep, f"tips_{prefijo}_2026-09-05_2026-09-18.csv"), "rb") as h:
+            # Con el nombre con que Toast lo baja, que es igual para las dos.
+            return ("EmployeeTipTotals-2026_09_05-2026_09_18.csv", h.read(), "text/csv")
+
+    def test_sin_reportes_no_deja_generar(self):
+        _, boton = self._app_con_reportes([])
+        self.assertTrue(boton.disabled)
+
+    def test_un_archivo_que_no_sirve_detiene_aunque_el_otro_este_bien(self):
+        """Quien sube dos espera dos archivos: uno malo no se salta en silencio."""
+        _, boton = self._app_con_reportes(
+            [self._archivo("NC"), ("otro.csv", b"a,b\n1,2\n", "text/csv")])
+        self.assertTrue(boton.disabled)
+
+    def test_con_un_solo_reporte_genera_esa_sucursal(self):
+        at, boton = self._app_con_reportes([self._archivo("NC")])
+        self.assertFalse(boton.disabled, "con un reporte ya se debe poder generar")
+        at = boton.click().run()
+        self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
+        botones = [b.label for b in at.get("download_button") if "⬇" in (b.label or "")]
+        self.assertEqual(botones, ["⬇  Plaza Bonita"])
+        avisos = " ".join(i.value for i in at.info)
+        self.assertIn("Gaslamp", avisos, "no dijo que Gaslamp quedo sin generar")
+
 
 class TestMarcaDeEfectivo(unittest.TestCase):
     """El rojo va SOLO en efectivo distinto de cero. Se prueba la funcion real,
@@ -1347,6 +1395,117 @@ class TestReportesCruzadosEnElMotor(unittest.TestCase):
         ruido = [a for a in r["avisos"] if a["tipo"] == "tips_sin_ubicar"]
         self.assertEqual(ruido, [], "los reportes equivocados no deben procesarse")
 
+
+
+class TestUnaSolaSucursal(unittest.TestCase):
+    """Con el reporte de una sola sucursal se genera esa, y nada mas esa.
+
+    Esperar los dos reportes para generar cualquiera atoraba la nomina. Pero la
+    otra sucursal NO sale con los tips en blanco: ese archivo se veria completo
+    y, subido a Gusto, esa gente cobraria la quincena sin sus tips.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+    BONITA, GASLAMP = "tacos-franc-bonita-llc", "tacos-franc-gaslamp-llc"
+
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+        nc = [self.esc.empleado("National City", "Ejemplo", n, gusto_id=f"n{i:05d}")
+              for i, n in enumerate(("Ana", "Beto", "Ciro"))]
+        gl = [self.esc.empleado("Gaslamp Quarter", "Prueba", n, gusto_id=f"g{i:05d}")
+              for i, n in enumerate(("Elsa", "Fito", "Gema"))]
+        for g in nc:
+            self.esc.turno(g, "2026-09-07", horas=8.0, con_meal=True)
+        for g in gl:
+            self.esc.turno(g, "2026-09-08", horas=6.0, con_meal=True)
+
+    @staticmethod
+    def _reporte(apellido, nombres):
+        return [{"employee": f"{n} {apellido}", "job": "Taquero", "hours": 8.0,
+                 "cash": 0.0, "non_cash": 100.0, "gratuity": 0.0} for n in nombres]
+
+    @staticmethod
+    def _bloqueos(r, tipo):
+        return [a for a in r["avisos"] if a["tipo"] == tipo and a["nivel"] == "bloquea"]
+
+    def test_con_un_reporte_sale_solo_esa_empresa(self):
+        r = self.esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: self._reporte("Ejemplo", ("Ana", "Beto", "Ciro"))})
+        self.assertEqual(set(r["by_company"]), {self.BONITA},
+                         "Gaslamp no tiene reporte: no debe salir su archivo")
+        self.assertEqual(r["companias_sin_procesar"], [self.GASLAMP])
+        self.assertAlmostEqual(r["hours_reported"], 24.0, places=2,
+                               msg="el cuadre debe medir solo las horas de Bonita")
+        self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2)
+        self.assertAlmostEqual(r["tips_placed"], 300.0, places=2)
+        self.assertEqual(r["problems"], [])
+
+    def test_esa_empresa_sale_igual_que_generando_las_dos(self):
+        """Generar una sola no cambia ni un renglon de esa empresa."""
+        reportes = {self.BONITA: self._reporte("Ejemplo", ("Ana", "Beto", "Ciro")),
+                    self.GASLAMP: self._reporte("Prueba", ("Elsa", "Fito", "Gema"))}
+        ambas = self.esc.correr(self.INICIO, self.FIN, tip_reports=reportes)
+        sola = self.esc.correr(self.INICIO, self.FIN, companias={self.GASLAMP},
+                               tip_reports={self.GASLAMP: reportes[self.GASLAMP]})
+        self.assertEqual(ambas["companias_sin_procesar"], [])
+        self.assertEqual(set(ambas["by_company"]), {self.BONITA, self.GASLAMP})
+        self.assertEqual(sola["by_company"][self.GASLAMP], ambas["by_company"][self.GASLAMP])
+
+    def _doble(self, confirmada):
+        """La misma persona con un registro en cada sucursal."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        a = esc.empleado("National City", "Doble", "Irma", gusto_id="n00009",
+                         person_key="p-irma", confirmada=confirmada)
+        b = esc.empleado("Gaslamp Quarter", "Doble", "Irma", gusto_id="g00009",
+                         person_key="p-irma", confirmada=confirmada)
+        esc.turno(a, "2026-09-07", horas=8.0, con_meal=True)
+        esc.turno(b, "2026-09-08", horas=8.0, con_meal=True)
+        return esc
+
+    def test_quien_esta_confirmado_en_las_dos_pide_los_dos_reportes(self):
+        """Su overtime se mide con las horas de las dos; con una le saldria menos."""
+        esc = self._doble("si")
+        r = esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: self._reporte("Doble", ("Irma",))})
+        candado = self._bloqueos(r, "persona_en_empresa_sin_procesar")
+        self.assertEqual(len(candado), 1)
+        self.assertIn("Gaslamp Quarter", candado[0]["texto"])
+
+        r = esc.correr(self.INICIO, self.FIN, tip_reports={
+            self.BONITA: self._reporte("Doble", ("Irma",)),
+            self.GASLAMP: self._reporte("Doble", ("Irma",))})
+        self.assertEqual(self._bloqueos(r, "persona_en_empresa_sin_procesar"), [],
+                         "con los dos reportes ya no hay nada que pedir")
+
+    def test_sin_confirmar_no_hay_candado(self):
+        """Sin confirmar, sus horas no se suman entre empresas: una sola sirve."""
+        esc = self._doble("CONFIRMAR")
+        r = esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: self._reporte("Doble", ("Irma",))})
+        self.assertEqual(self._bloqueos(r, "persona_en_empresa_sin_procesar"), [])
+
+    def test_un_reporte_de_la_otra_sucursal_se_detecta_aunque_sea_el_unico(self):
+        """Con una sola plantilla la propia siempre gana: hay que comparar con las dos."""
+        r = self.esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: self._reporte("Prueba", ("Elsa", "Fito", "Gema"))})
+        ajeno = self._bloqueos(r, "reporte_de_otra_sucursal")
+        self.assertEqual(len(ajeno), 1)
+        self.assertIn("Gaslamp Quarter", ajeno[0]["texto"])
+
+    def test_la_sucursal_sin_empresa_se_sigue_revisando(self):
+        """Una sucursal sin empresa de Gusto se revisa aunque se genere solo una."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        esc.sucursal_sin_empresa("Sucursal Nueva")
+        ana = esc.empleado("National City", "Ejemplo", "Ana", gusto_id="n00001")
+        esc.turno(ana, "2026-09-07", horas=8.0, con_meal=True)
+        nuevo = esc.empleado("Sucursal Nueva", "Nuevo", "Remo")
+        esc.turno(nuevo, "2026-09-07", horas=5.0)
+        r = esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: self._reporte("Ejemplo", ("Ana",))})
+        self.assertIn("sucursal_sin_empresa_con_horas", {a["tipo"] for a in r["avisos"]})
 
 
 class TestPrimaPorViolacion(unittest.TestCase):

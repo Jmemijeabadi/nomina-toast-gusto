@@ -509,6 +509,8 @@ def load_employee_map(path: str = "") -> dict:
                 "gusto_employee_id_propuesto": employee_id if action == "CONFIRMAR" else "",
                 "person_key": (row.get("person_key") or "").strip(),
                 "persona_confirmada": (row.get("persona_confirmada") or "").strip(),
+                "toast_location": (row.get("toast_location") or "").strip(),
+                "toast_name": (row.get("toast_name") or "").strip(),
                 "gusto_name": (row.get("gusto_name") or "").strip(),
                 "confianza": (row.get("confianza") or "").strip(),
                 "excluir": action == "EXCLUIR",
