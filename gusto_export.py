@@ -13,9 +13,10 @@ Fuentes de cada columna:
       por restaurante y no trae double time.
 
   missed_break_hours
-      Horas de prima de meal que detecta el motor, topadas en 1 por jornada.
-      Va en HORAS a proposito: Gusto las valua con su propio Regular Rate of
-      Pay, que es lo que exige California. La columna
+      Horas de prima de meal que detecta el motor: una hora por cada violacion
+      (horas_de_prima en toast_payroll.py). En Gusto es "Break premium hours".
+      Va en HORAS a proposito: Gusto la paga a su tarifa regular, en vez de
+      que la herramienta adivine la tarifa. La columna
       custom_earning_meal_break_violation se deja VACIA; llenar las dos paga
       la prima dos veces porque Gusto no las deduplica.
 
@@ -33,8 +34,12 @@ Reglas duras:
   - El string de `title` se copia byte por byte del template, incluido el
     sufijo " (Primary)": es lo UNICO que le dice a Gusto a que job va el
     renglon.
-  - El dinero (tips, service charges, prima) va una sola vez, en el renglon
-    primario, imitando el patron de `reimbursement` del template.
+  - La prima va una sola vez, en el renglon primario, imitando el patron de
+    `reimbursement` del template. Los tips y los service charges van por
+    puesto, como los trae el reporte.
+  - custom_earning_distributed_service_charges es la gratuity del reporte
+    (Cash + Non-cash gratuity after pooling): en Toast es el cargo obligatorio
+    de mesas grandes, que es salario y no tip. NO son meal violations.
   - Ninguna fila cruza empresas: cada location es una LLC distinta.
   - Si algo queda sin mapear, no se escribe nada.
 """
@@ -116,6 +121,7 @@ GRUPOS_DE_AVISO = {
     "descansos_no_tomados":            "descansos",
     "cuadre_horas":                    "cuadre",
     "cuadre_tips":                     "cuadre",
+    "cuadre_prima":                    "cuadre",
     "reporte_de_otra_sucursal":        "cuadre",
 }
 
@@ -156,6 +162,27 @@ PUESTOS_CON_EFECTIVO = {
 
 # La prima de meal nunca se escribe como monto: ver el docstring.
 MEAL_PREMIUM_COLUMN = "missed_break_hours"
+
+# Las columnas de dinero que van por puesto. La prima no: va en el primario.
+COLUMNAS_DE_DINERO_POR_PUESTO = (
+    "paycheck_tips", "cash_tips", "custom_earning_distributed_service_charges")
+
+
+def dinero_del_renglon(fila: dict) -> float:
+    """Tips y service charges de un renglon del CSV."""
+    return sum(float(fila.get(c) or 0) for c in COLUMNAS_DE_DINERO_POR_PUESTO)
+
+
+def dinero_en_puestos_no_primarios(filas: list) -> list:
+    """Renglones de puesto NO primario que llevan dinero.
+
+    Es la pregunta abierta mas cara: no esta comprobado que Gusto acepte dinero
+    en esos renglones. La pantalla y el diagnostico lo calculaban cada uno por
+    su lado y los dos contaban solo los tips: la gratuity, con la misma duda,
+    quedaba fuera del aviso ($109.62 en Bonita del 3 al 16 de octubre).
+    """
+    return [f for f in filas
+            if "(Primary)" not in f["title"] and dinero_del_renglon(f) > 0.005]
 
 
 # Lo que cuenta como "si" en persona_confirmada. En un solo lugar para que la
@@ -651,7 +678,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             target["overtime"] += split["overtime"] * share
             target["double"] += split["double"] * share
 
-    # Paso 5: prima de meal, topada por persona y jornada.
+    # Paso 5: prima de meal por persona y jornada (horas_de_prima: hoy una hora
+    # por cada violacion, sin tope diario).
     day_violations = defaultdict(int)
     for row in audited:
         if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
@@ -676,33 +704,36 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         avisar("accion", "descansos_no_tomados",
             f"{nombre_loc}: {datos['turnos']} turno(s) de "
             f"{len(datos['personas'])} persona(s) arriba de 6 h donde Toast "
-            f"reporta el descanso de comida como NO tomado. La prima ya va en el "
-            f"CSV, asi que la nomina esta bien; lo que conviene mirar es por que "
-            f"pasa, sobre todo si una sucursal concentra casi todos.")
+            f"reporta el descanso de comida como NO tomado. La prima ya esta "
+            f"calculada: va en el CSV, o en la lista de retenidos si la persona no "
+            f"entra al CSV. Lo que conviene mirar es por que pasa, sobre todo si "
+            f"una sucursal concentra casi todos.")
 
     premium_por_persona = defaultdict(float)
     for (persona, _day), count in day_violations.items():
         if count > 0:
             premium_por_persona[persona] += horas_de_prima(count)
     # Se baja de persona a id de pago: si la persona tiene dos empresas, su
-    # prima se paga UNA vez, en la empresa donde tiene mas horas.
+    # prima se paga UNA vez, en la empresa donde tiene mas horas. Se decide una
+    # vez por PERSONA, no por registro de Toast: decidido por registro, una
+    # persona con dos empresas y sin horas colocadas en ninguna recibia la
+    # prima en LAS DOS, porque cada registro se elegia a si mismo por defecto.
+    # Quien no tiene id de Gusto no tiene destino: su prima va a retenidos.
     horas_por_pago = defaultdict(float)
     for (pago, _company, _title), cell in hours_by_cell.items():
         horas_por_pago[pago] += cell["regular"] + cell["overtime"] + cell["double"]
+    pagos_de_persona = defaultdict(set)
     for guid, employee in employees.items():
-        pago = employee.get("gusto_employee_id")
-        if not pago:
+        if employee.get("gusto_employee_id"):
+            pagos_de_persona[person_of(guid)].add(employee["gusto_employee_id"])
+    destino_de_prima = {}
+    for persona, horas_prima in premium_por_persona.items():
+        pagos = pagos_de_persona.get(persona)
+        if not pagos:
             continue
-        persona = person_of(guid)
-        if persona in premium_por_persona:
-            mejor = max(
-                (p for p in horas_por_pago
-                 if any(person_of(g) == persona
-                        and (employees.get(g) or {}).get("gusto_employee_id") == p
-                        for g in employees)),
-                key=lambda p: horas_por_pago[p], default=pago)
-            if mejor == pago:
-                premium_by_identity[pago] = premium_por_persona[persona]
+        destino = max(sorted(pagos), key=lambda p: horas_por_pago.get(p, 0.0))
+        destino_de_prima[persona] = destino
+        premium_by_identity[destino] += horas_prima
 
     for (location, toast_job, identity), (name, title) in sorted(unmapped_routed.items()):
         avisar("informativo", "job_no_existe_en_gusto",
@@ -1066,6 +1097,22 @@ def build(client: ToastClient, start: date, end_inclusive: date,
 
         output[company] = rows
 
+    # La prima que NO llega a ningun renglon. Antes se calculaba y se tiraba en
+    # silencio: a quien no tiene alta en Gusto, o cuyo id no esta en el
+    # template, se le detectaba la violacion, no entraba al CSV, la lista de
+    # retenidos solo decia horas y tips, y el aviso de descansos aseguraba que
+    # "la prima ya va en el CSV". Quien le pagaba a mano no tenia de donde saber
+    # que tambien se le debia la prima. Se guarda con la llave con la que se va
+    # a encontrar su renglon de retenidos: su id de Gusto si lo tiene, si no la
+    # persona (SIN-MAPEO::guid o PERSONA::clave).
+    pagos_escritos = {f["gusto_employee_id"] for filas in output.values() for f in filas}
+    prima_retenida = defaultdict(float)
+    for persona, horas_prima in premium_por_persona.items():
+        destino = destino_de_prima.get(persona)
+        if horas_prima <= 0 or (destino and destino in pagos_escritos):
+            continue
+        prima_retenida[destino or persona] += horas_prima
+
     # unmapped_hours viene con DOS formas de llave y antes solo se leia una:
     #   SIN-MAPEO::{guid}   la persona no tiene identidad en Gusto
     #   {gusto_employee_id} la tiene, pero ese id no aparece en el template
@@ -1102,18 +1149,21 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         empleado = employees[guid]
         display = empleado["display"]
         horas = horas_por_guid.get(guid, 0.0)
+        prima = prima_retenida.pop(person_of(guid), 0.0)
         held_back.append({
             "nombre": display.strip(),
             "sucursal": empleado["location"],
             "horas": round(horas, 2),
             "tips": round(tips_de(display), 2),
+            "prima": round(prima, 2),
             "motivo": "sin alta en Gusto o sin gusto_employee_id confirmado",
             "que_hacer": "dar de alta en Gusto y volver a correr, o capturar a mano",
         })
         avisar("accion", "retenido_sin_alta",
             f"RETENIDO: {display.strip()} ({empleado['location']}) con "
-            f"{horas:.2f} h no entra al CSV porque no tiene alta en Gusto. Hay "
-            f"que pagarle aparte o darlo de alta y repetir.")
+            f"{horas:.2f} h{f' y {prima:.2f} h de prima de meal' if prima > 0.005 else ''} "
+            f"no entra al CSV porque no tiene alta en Gusto. Hay que pagarle "
+            f"aparte o darlo de alta y repetir.")
 
     # Quien SI esta mapeado pero tiene horas sin destino no aparece en
     # pending_guids (no esta pendiente de confirmar), asi que necesita su propia
@@ -1128,6 +1178,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "sucursal": empleado.get("location", ""),
             "horas": round(horas, 2),
             "tips": 0.0,
+            "prima": round(prima_retenida.pop(
+                empleado.get("gusto_employee_id") or person_of(guid), 0.0), 2),
             "motivo": motivo_sin_destino.get(guid, "sus horas no tienen destino"),
             "que_hacer": ("mapear ese job en job_map.csv o corregir el job del "
                           "turno en Toast, y volver a generar"),
@@ -1144,11 +1196,13 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         if horas <= 0.005:
             continue
         quien = name_by_identity.get(employee_id, employee_id)
+        prima = prima_retenida.pop(employee_id, 0.0)
         held_back.append({
             "nombre": quien.strip(),
             "sucursal": "",
             "horas": round(horas, 2),
             "tips": 0.0,
+            "prima": round(prima, 2),
             "motivo": (f"su id de Gusto ({employee_id}) no aparece en el template "
                        f"de ninguna empresa"),
             "que_hacer": ("volver a bajar el template de Gusto: si la persona ya "
@@ -1156,7 +1210,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                           "decidir si se le paga y como"),
         })
         avisar("accion", "retenido_sin_alta",
-            f"RETENIDO: {quien.strip()} con {horas:.2f} h tiene id de Gusto "
+            f"RETENIDO: {quien.strip()} con {horas:.2f} h"
+            f"{f' y {prima:.2f} h de prima de meal' if prima > 0.005 else ''} tiene id de Gusto "
             f"({employee_id}) pero ese id no esta en el template de ninguna "
             f"empresa, asi que sus horas no tienen renglon donde caer. Vuelve a "
             f"bajar el template de Gusto y repite.")
@@ -1170,6 +1225,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "nombre": item["nombre"],
             "horas": round(item["horas"], 2),
             "tips": 0.0,
+            "prima": 0.0,
             "motivo": (f"trabajo '{item['title']}' y ese puesto no tiene renglon "
                        f"en Gusto (tiene {', '.join(item['titles'])})"),
             "que_hacer": ("agregar ese job en Gusto y volver a generar, o pagarle "
@@ -1181,13 +1237,40 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         if who.strip() in reported_held or amount <= 0.005:
             continue
         held_back.append({
-            "nombre": who.strip(), "horas": 0.0, "tips": round(amount, 2),
+            "nombre": who.strip(), "horas": 0.0, "tips": round(amount, 2), "prima": 0.0,
             "motivo": "tiene tips en el reporte pero no se pudo resolver su identidad en Gusto",
             "que_hacer": "revisar si es un registro duplicado o de baja en Toast",
         })
         avisar("accion", "retenido_tips_sin_identidad",
             f"RETENIDO: ${amount:,.2f} de tips de {who.strip()} no entran al CSV "
             f"porque no se resolvio su identidad en Gusto.")
+
+    # Prima que no encontro renglon de retenidos: se lista sola. Hoy no deberia
+    # pasar —quien tiene prima tiene horas, y sus horas ya tienen renglon—, pero
+    # si pasa, la prima tiene que verse y no perderse.
+    def nombre_de_clave(clave: str) -> str:
+        if clave.startswith("SIN-MAPEO::"):
+            return (employees.get(clave.split("::", 1)[1]) or {}).get("display", clave)
+        if clave.startswith("PERSONA::"):
+            clave_persona = clave.split("::", 1)[1]
+            return next((e["display"] for e in employees.values()
+                         if e.get("person_key") == clave_persona), clave)
+        return name_by_identity.get(clave, clave)
+
+    for clave, horas_prima in sorted(prima_retenida.items()):
+        if horas_prima <= 0.005:
+            continue
+        quien = nombre_de_clave(clave).strip()
+        held_back.append({
+            "nombre": quien, "horas": 0.0, "tips": 0.0,
+            "prima": round(horas_prima, 2),
+            "motivo": "tiene prima de meal y no hay renglon del CSV donde cobrarla",
+            "que_hacer": "pagarle la prima aparte, o darlo de alta en Gusto y volver a generar",
+        })
+        avisar("accion", "retenido_sin_alta",
+            f"RETENIDO: {quien} tiene {horas_prima:.2f} h de prima de meal que no "
+            f"entran al CSV porque no hay renglon donde cobrarlas. Hay que pagarla "
+            f"aparte.")
 
     # Turnos abiertos y auto-cerrados. audit_time_entry ya calcula las dos
     # banderas y _collect_exceptions las reporta, pero eso vive en la ruta de
@@ -1244,7 +1327,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     placed = sum(c["cash"] + c["non_cash"] + c["gratuity"] for c in tips_by_cell.values())
     for quien, monto in sorted(tips_no_persona.items(), key=lambda x: -x[1]):
         held_back.append({
-            "nombre": quien, "horas": 0.0, "tips": round(monto, 2),
+            "nombre": quien, "horas": 0.0, "tips": round(monto, 2), "prima": 0.0,
             "motivo": "tips que el pool de Toast dejo en una cuenta que no es persona",
             "que_hacer": "revisar en Tips Manager a quien le corresponden; en "
                          "California los tips son propiedad de los empleados",
@@ -1307,7 +1390,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         return ""
 
     held_back[:] = [h for h in held_back
-                    if h["horas"] > 0.005 or h["tips"] > 0.005]
+                    if h["horas"] > 0.005 or h["tips"] > 0.005 or h["prima"] > 0.005]
     for h in held_back:
         parecido = se_parece_a_alguien_pagado(h["nombre"])
         if parecido:
@@ -1331,6 +1414,21 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"Cierre de HORAS: entraron {hours_reported:.2f} h, salieron "
             f"{hours_placed:.2f} h al CSV y {hours_held:.2f} h a retenidos. "
             f"Faltan {hueco_horas:.2f} h sin explicar; no subir hasta cuadrarlo.")
+
+    # C) CIERRE DE LA PRIMA. Lo mismo que las horas: toda la prima detectada
+    # tiene que llegar a un renglon del CSV o a retenidos. Sin este cierre, una
+    # prima que se pierde no la detiene nada, porque no es parte de las horas.
+    premium_reported = sum(premium_por_persona.values())
+    premium_placed = sum(float(fila[MEAL_PREMIUM_COLUMN] or 0)
+                         for filas in output.values() for fila in filas)
+    premium_held = sum(h["prima"] for h in held_back)
+    hueco_prima = premium_reported - premium_placed - premium_held
+    if abs(hueco_prima) > TOLERANCIA_HORAS:
+        avisar("bloquea", "cuadre_prima",
+            f"Cierre de la PRIMA de meal: se detectaron {premium_reported:.2f} h, "
+            f"salieron {premium_placed:.2f} h al CSV y {premium_held:.2f} h a "
+            f"retenidos. Faltan {hueco_prima:.2f} h sin explicar; no subir hasta "
+            f"cuadrarlo.")
     # Diagnostico: lo que hace falta para revisar una corrida sin tener acceso a
     # la cuenta. Es agregado a proposito — conteos, totales y desgloses, sin
     # nombres ni correos — porque se pensó para pegarse en un chat o un correo.
@@ -1378,6 +1476,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         "segundo_meal_si_pasa_de": SECOND_MEAL_TRIGGER_HOURS,
         "columna_de_tips": NON_CASH_TIPS_COLUMN,
         "columna_de_prima": MEAL_PREMIUM_COLUMN,
+        "columna_de_gratuity": "custom_earning_distributed_service_charges",
         "tolerancia_horas": TOLERANCIA_HORAS,
         "tolerancia_tips": TOLERANCIA_TIPS,
         "reportes_de_tips_recibidos": {
@@ -1392,6 +1491,9 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "hours_reported": round(hours_reported, 2),
             "hours_placed": round(hours_placed, 2),
             "hours_held": round(hours_held, 2),
+            "premium_reported": round(premium_reported, 2),
+            "premium_placed": round(premium_placed, 2),
+            "premium_held": round(premium_held, 2),
             "tips_reported": round(tips_reported_total, 2),
             "tips_placed": round(placed, 2), "tips_held": tips_held,
             # Tips que el pool dejo en una cuenta que no es una persona. Es un
@@ -1432,7 +1534,9 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     w(f"  1er meal requerido si pasa de  {d.get('primer_meal_si_pasa_de')} h")
     w(f"  2do meal requerido si pasa de  {d.get('segundo_meal_si_pasa_de')} h")
     w(f"  tips no-efectivo a la columna '{d.get('columna_de_tips')}'")
-    w(f"  prima a la columna          '{d.get('columna_de_prima')}'")
+    w(f"  prima a la columna          '{d.get('columna_de_prima')}' (en Gusto: Break premium hours)")
+    w(f"  gratuity a la columna       '{d.get('columna_de_gratuity')}' (Distributed service charges)")
+    w("  custom_earning_meal_break_violation va siempre vacia (la prima va en horas)")
     w(f"  tolerancia del cuadre       {d.get('tolerancia_horas')} h / "
       f"${d.get('tolerancia_tips')}")
     recibidos = d.get("reportes_de_tips_recibidos") or {}
@@ -1472,6 +1576,11 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
       f"  SIN EXPLICAR {hr - hc - hh:>+9,.2f}")
     w(f"  tips   entro {tr:>10,.2f}  al CSV {tc:>10,.2f}  retenido {th:>9,.2f}"
       f"  sin dueno {tn:>8,.2f}  SIN EXPLICAR {tr - tc - th - tn:>+9,.2f}")
+    pr, pc, ph = (resultado.get("premium_reported", 0.0),
+                  resultado.get("premium_placed", 0.0),
+                  resultado.get("premium_held", 0.0))
+    w(f"  prima  entro {pr:>10,.2f}  al CSV {pc:>10,.2f}  retenido {ph:>9,.2f}"
+      f"  SIN EXPLICAR {pr - pc - ph:>+9,.2f}   (horas de break premium)")
 
     w("")
     w("LOS CSV")
@@ -1489,29 +1598,32 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
         w(f"     regular {suma('regular_hours'):>10,.2f}   "
           f"OT {suma('overtime_hours'):>8,.2f}   "
           f"DT {suma('double_overtime_hours'):>7,.2f}")
-        w(f"     prima de meal {suma('missed_break_hours'):>7,.2f} h")
+        w(f"     break premium (meal) {suma('missed_break_hours'):>7,.2f} h")
         w(f"     tips: paycheck {suma(NON_CASH_TIPS_COLUMN):>10,.2f}  "
-          f"efectivo {suma('cash_tips'):>8,.2f}  "
-          f"gratuity {suma('custom_earning_distributed_service_charges'):>9,.2f}")
-        # Los tips en renglones de puesto NO primario son la pregunta abierta
-        # mas cara: no esta comprobado que Gusto los acepte ahi. La pantalla ya
+          f"efectivo {suma('cash_tips'):>8,.2f}")
+        w(f"     service charges (gratuity) "
+          f"{suma('custom_earning_distributed_service_charges'):>9,.2f}")
+        # El dinero en renglones de puesto NO primario es la pregunta abierta
+        # mas cara: no esta comprobado que Gusto lo acepte ahi. La pantalla ya
         # lo muestra, pero si alguien manda solo este diagnostico no se veia.
-        secundarios = [f for f in filas if "(Primary)" not in f["title"]
-                       and (float(f[NON_CASH_TIPS_COLUMN] or 0)
-                            + float(f["cash_tips"] or 0)) > 0.005]
+        secundarios = dinero_en_puestos_no_primarios(filas)
         if secundarios:
-            monto = sum(float(f[NON_CASH_TIPS_COLUMN] or 0) + float(f["cash_tips"] or 0)
-                        for f in secundarios)
-            w(f"     tips en puesto NO primario: {len(secundarios)} renglones, "
-              f"${monto:,.2f}  (sin comprobar que Gusto los acepte ahi)")
+            de_tips = sum(float(f[NON_CASH_TIPS_COLUMN] or 0) + float(f["cash_tips"] or 0)
+                          for f in secundarios)
+            de_cargos = sum(float(f["custom_earning_distributed_service_charges"] or 0)
+                            for f in secundarios)
+            w(f"     dinero en puesto NO primario: {len(secundarios)} renglones, "
+              f"${de_tips + de_cargos:,.2f} (tips ${de_tips:,.2f}, service charges "
+              f"${de_cargos:,.2f})  (sin comprobar que Gusto lo acepte ahi)")
 
     retenidos = [h for h in (resultado.get("held_back") or [])
-                 if h["horas"] > 0 or h["tips"] > 0]
+                 if h["horas"] > 0 or h["tips"] > 0 or h.get("prima", 0) > 0]
     if retenidos:
         w("")
         w(f"NO ENTRARON AL CSV ({len(retenidos)})")
         for h in retenidos:
-            w(f"  {h['horas']:>8,.2f} h  ${h['tips']:>9,.2f}   {h['motivo']}")
+            w(f"  {h['horas']:>8,.2f} h  ${h['tips']:>9,.2f}  prima {h.get('prima', 0):>5,.2f} h"
+              f"   {h['motivo']}")
 
     for etiqueta, clave in (("BLOQUEA", "problems"), ("PARA REVISAR", "revisar"),
                             ("AVISOS", "warnings")):
@@ -1610,20 +1722,22 @@ def main() -> int:
         print(f"    regular {suma('regular_hours'):,.2f} h | "
               f"OT {suma('overtime_hours'):,.2f} h | "
               f"DT {suma('double_overtime_hours'):,.2f} h")
-        print(f"    prima de meal {suma('missed_break_hours'):,.2f} h | "
-              f"tips ${suma('paycheck_tips') + suma('cash_tips') + suma('custom_earning_distributed_service_charges'):,.2f}")
+        print(f"    break premium (meal) {suma('missed_break_hours'):,.2f} h | "
+              f"tips ${suma('paycheck_tips') + suma('cash_tips'):,.2f} | "
+              f"service charges ${suma('custom_earning_distributed_service_charges'):,.2f}")
 
     held = result.get("held_back") or []
     if held:
         held_path = os.path.join(args.out_dir, f"retenidos_{stamp}.csv")
-        write_csv(held_path, held, ["nombre", "horas", "tips", "motivo", "que_hacer"])
+        write_csv(held_path, held, ["nombre", "horas", "tips", "prima", "motivo", "que_hacer"])
         print()
         print("  " + "!" * 60)
         print(f"  {len(held)} persona(s) NO entraron al CSV, con "
               f"{sum(h['horas'] for h in held):.2f} h sin pagar:")
         for item in held:
             print(f"    {item['nombre']:<28} {item['horas']:>8.2f} h  "
-                  f"${item.get('tips', 0):>9,.2f} de tips")
+                  f"${item.get('tips', 0):>9,.2f} de tips  "
+                  f"{item.get('prima', 0):>5.2f} h de prima")
         print(f"  Detalle: {held_path}")
         print("  " + "!" * 60)
 

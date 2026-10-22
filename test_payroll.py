@@ -203,7 +203,7 @@ class TestContratoDelCSV(unittest.TestCase):
                     self.assertEqual(salida["gusto_employee_id"],
                                      esperada["gusto_employee_id"])
 
-    def test_la_prima_nunca_pasa_de_14_horas_por_periodo(self):
+    def test_la_prima_nunca_pasa_de_28_horas_por_periodo(self):
         """La prima tiene un techo fisico, aunque ya no haya tope por dia.
 
         Se paga una hora por violacion (decision del 2026-10-20). En un turno caben
@@ -1123,7 +1123,8 @@ class TestLaPantallaDeResultados(unittest.TestCase):
                 "tacos-franc-bonita-llc": gusto_export.load_tip_report(nc),
                 "tacos-franc-gaslamp-llc": gusto_export.load_tip_report(gl)})
 
-    def _pintar(self, resultado):
+    def _app(self, resultado):
+        """Corre app.py de verdad con este resultado ya generado."""
         from streamlit.testing.v1 import AppTest
         anterior = os.environ.get("APP_PASSWORD")
         os.environ["APP_PASSWORD"] = "prueba"
@@ -1139,6 +1140,14 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         at.session_state["huella"] = (self.INICIO, self.FIN, ())
         at.run()
         self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
+        return at
+
+    @staticmethod
+    def _marcos(at):
+        return [(t.value.data if hasattr(t.value, "data") else t.value) for t in at.dataframe]
+
+    def _pintar(self, resultado):
+        at = self._app(resultado)
         veredicto = next((e for e in at.main if type(e).__name__ in ("Error", "Warning", "Success")
                           and "###" in (getattr(e, "value", "") or "")), None)
         botones = [b for b in at.get("download_button") if "⬇" in (b.label or "")]
@@ -1162,22 +1171,7 @@ class TestLaPantallaDeResultados(unittest.TestCase):
 
     def _tablas(self, resultado):
         """Las tablas de la vista previa y de totales, tal como se pintaron."""
-        from streamlit.testing.v1 import AppTest
-        anterior = os.environ.get("APP_PASSWORD")
-        os.environ["APP_PASSWORD"] = "prueba"
-        self.addCleanup(lambda: os.environ.__setitem__("APP_PASSWORD", anterior)
-                        if anterior is not None else os.environ.pop("APP_PASSWORD", None))
-        at = AppTest.from_file("app.py", default_timeout=180)
-        at.session_state["acceso_ok"] = True
-        at.run()
-        sel = at.selectbox[0]
-        sel.set_value(next(i for i, o in enumerate(sel.options) if "05 Sep" in str(o)))
-        at.run()
-        at.session_state["resultado"] = resultado
-        at.session_state["huella"] = (self.INICIO, self.FIN, ())
-        at.run()
-        self.assertFalse(at.exception, f"la pantalla tronó: {at.exception}")
-        marcos = [(t.value.data if hasattr(t.value, "data") else t.value) for t in at.dataframe]
+        marcos = self._marcos(self._app(resultado))
         previas = [m for m in marcos if "Empleado" in m.columns]
         totales = [m for m in marcos if "" in m.columns and "Reg" in m.columns]
         return previas, totales
@@ -1207,7 +1201,10 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         bonita = self.base["by_company"]["tacos-franc-bonita-llc"]
         en_pantalla = totales[0].iloc[0]
         pares = (("Reg", "regular_hours"), ("OT", "overtime_hours"),
-                 ("Tips cheque", "paycheck_tips"), ("Tips efectivo", "cash_tips"))
+                 ("Break premium hrs", "missed_break_hours"),
+                 ("Tips cheque", "paycheck_tips"), ("Tips efectivo", "cash_tips"),
+                 ("Distributed service charges",
+                  "custom_earning_distributed_service_charges"))
         for titulo, col in pares:
             archivo = sum(float(f[col]) if (f[col] or "").strip() else 0.0 for f in bonita)
             self.assertAlmostEqual(float(en_pantalla[titulo]), archivo, places=2,
@@ -1265,6 +1262,34 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         _, boton = self._app_con_reportes(
             [self._archivo("NC"), ("otro.csv", b"a,b\n1,2\n", "text/csv")])
         self.assertTrue(boton.disabled)
+
+    def test_la_vista_previa_explica_las_columnas_que_se_confunden(self):
+        """En Bonita la gratuity se leyo como meal violations: es la unica columna
+        con dolares junto a la de meal, que va vacia a proposito."""
+        textos = " ".join(c.value for c in self._app(self.base).caption)
+        for frase in ("Break premium hrs", "meal violations",
+                      "Distributed service charges", "Meal Break Violation",
+                      "va vacia a proposito"):
+            self.assertIn(frase, textos)
+
+    def test_el_cuadre_incluye_la_prima(self):
+        cuadre = next(m for m in self._marcos(self._app(self.base)) if "Entro" in m.columns)
+        fila = cuadre[cuadre[""] == "Break premium hrs"]
+        self.assertEqual(len(fila), 1, "el cuadre no muestra la prima")
+        self.assertAlmostEqual(float(fila.iloc[0]["Sin explicar"]), 0.0, places=2)
+
+    def test_la_prima_de_un_retenido_se_ve(self):
+        """Si no se ve, quien le paga a mano no sabe que tambien se le debe."""
+        import copy
+        r = copy.deepcopy(self.base)
+        victima = next(h for h in r["held_back"] if h["horas"] > 0)
+        victima["prima"] = 2.0
+        r["premium_reported"] += 2.0
+        r["premium_held"] += 2.0
+        tabla = next(m for m in self._marcos(self._app(r)) if "Por que" in m.columns)
+        fila = tabla[tabla["Persona"] == victima["nombre"]]
+        self.assertEqual(len(fila), 1)
+        self.assertEqual(fila.iloc[0]["Break premium hrs"], "2.00")
 
     def test_con_un_solo_reporte_genera_esa_sucursal(self):
         at, boton = self._app_con_reportes([self._archivo("NC")])
@@ -1506,6 +1531,131 @@ class TestUnaSolaSucursal(unittest.TestCase):
         r = esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
             self.BONITA: self._reporte("Ejemplo", ("Ana",))})
         self.assertIn("sucursal_sin_empresa_con_horas", {a["tipo"] for a in r["avisos"]})
+
+
+class TestLaPrimaNoSePierde(unittest.TestCase):
+    """Toda la prima detectada sale al CSV o a retenidos, igual que las horas.
+
+    Antes, la de quien no entra al CSV se calculaba y se tiraba: la lista de
+    retenidos solo decia horas y tips, el aviso de descansos aseguraba que "la
+    prima ya va en el CSV", y como la prima no es parte de las horas, el cuadre
+    no la veia. Quien le pagaba a mano no tenia de donde saber que se le debia.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+
+    def setUp(self):
+        self.esc = toast_falso.Escenario()
+        self.addCleanup(self.esc.limpiar)
+        # Alguien que si entra al CSV, con una violacion (7 h sin meal).
+        ana = self.esc.empleado("National City", "Ejemplo", "Ana", gusto_id="n00001")
+        self.esc.turno(ana, "2026-09-07", horas=7.0)
+
+    @staticmethod
+    def _hueco(r):
+        return r["premium_reported"] - r["premium_placed"] - r["premium_held"]
+
+    def _sin_candado(self, r):
+        self.assertEqual([a for a in r["avisos"] if a["tipo"] == "cuadre_prima"], [])
+
+    def test_la_de_quien_si_entra_va_en_el_csv(self):
+        r = self.esc.correr(self.INICIO, self.FIN)
+        self.assertAlmostEqual(r["premium_reported"], 1.0, places=2)
+        self.assertAlmostEqual(r["premium_placed"], 1.0, places=2)
+        self.assertAlmostEqual(r["premium_held"], 0.0, places=2)
+        self._sin_candado(r)
+
+    def test_la_de_quien_no_tiene_alta_sale_en_retenidos(self):
+        rita = self.esc.empleado("National City", "Sinalta", "Rita")
+        self.esc.turno(rita, "2026-09-08", horas=7.0)     # 1er meal
+        self.esc.turno(rita, "2026-09-09", horas=13.0)    # 1er y 2do meal
+        r = self.esc.correr(self.INICIO, self.FIN)
+        suya = [h for h in r["held_back"] if h["nombre"].startswith("Sinalta")]
+        self.assertEqual(len(suya), 1)
+        self.assertAlmostEqual(suya[0]["prima"], 3.0, places=2,
+                               msg="la prima de quien no tiene alta se perdio")
+        self.assertAlmostEqual(r["premium_placed"], 1.0, places=2, msg="solo la de Ana")
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+        self._sin_candado(r)
+        self.assertRegex(gusto_export.formatear_diagnostico(r, self.INICIO, self.FIN),
+                         r"prima\s+3\.00 h", "el diagnostico no dice la prima retenida")
+        self.assertTrue(any("3.00 h de prima" in a["texto"] for a in r["avisos"]
+                            if a["tipo"] == "retenido_sin_alta"),
+                        "el aviso de retenido no dice la prima")
+
+    def test_la_de_un_id_que_no_esta_en_el_template_sale_en_retenidos(self):
+        quien = self.esc.empleado("Gaslamp Quarter", "Ejemplo", "Eliseo",
+                                  gusto_id="zzz999", en_template=False)
+        self.esc.turno(quien, "2026-09-08", horas=7.0)
+        r = self.esc.correr(self.INICIO, self.FIN)
+        suya = [h for h in r["held_back"] if "zzz999" in h["motivo"]]
+        self.assertEqual(len(suya), 1)
+        self.assertAlmostEqual(suya[0]["prima"], 1.0, places=2)
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+        self._sin_candado(r)
+
+    def test_quien_esta_en_dos_empresas_la_cobra_una_sola_vez(self):
+        """Decidida por registro de Toast, una persona confirmada en las dos
+        empresas y sin horas colocadas en ninguna cobraba la prima en LAS DOS:
+        cada registro se elegia a si mismo por defecto."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        esc.jobs_sin_mapear = {"Raro"}
+        a = esc.empleado("National City", "Doble", "Irma", gusto_id="n00009",
+                         person_key="p-irma", confirmada="si")
+        b = esc.empleado("Gaslamp Quarter", "Doble", "Irma", gusto_id="g00009",
+                         person_key="p-irma", confirmada="si")
+        # Dos puestos en cada empresa: un job sin mapeo no tiene a donde ir.
+        esc.renglon_de_gusto("National City", "Doble", "Irma", "n00009", job="Prep")
+        esc.renglon_de_gusto("Gaslamp Quarter", "Doble", "Irma", "g00009", job="Prep")
+        esc.turno(a, "2026-09-07", horas=7.0, job="Raro")
+        esc.turno(b, "2026-09-08", horas=7.0, job="Raro")
+        r = esc.correr(self.INICIO, self.FIN)
+        self.assertAlmostEqual(r["premium_reported"], 2.0, places=2)
+        por_empresa = {c: sum(float(f["missed_break_hours"] or 0) for f in filas)
+                       for c, filas in r["by_company"].items()}
+        self.assertAlmostEqual(sum(por_empresa.values()), 2.0, places=2,
+                               msg=f"la prima se pago mas de una vez: {por_empresa}")
+        self.assertEqual(sum(1 for v in por_empresa.values() if v > 0), 1,
+                         "la prima de una persona va en UNA empresa")
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+
+
+class TestDineroEnPuestosNoPrimarios(unittest.TestCase):
+    """El aviso de dinero en puestos no primarios cuenta tambien la gratuity.
+
+    La pantalla y el diagnostico lo calculaban cada uno por su lado y los dos
+    sumaban solo tips: $109.62 de gratuity en Bonita (3-16 oct) quedaban fuera,
+    con la misma duda de si Gusto acepta dinero en ese renglon.
+    """
+
+    @staticmethod
+    def _fila(titulo, cheque="", efectivo="", cargos=""):
+        fila = {c: "" for c in gusto_export.GUSTO_COLUMNS}
+        fila.update({"last_name": "Ejemplo", "first_name": "Ana", "title": titulo,
+                     "gusto_employee_id": "n00001", "paycheck_tips": cheque,
+                     "cash_tips": efectivo,
+                     "custom_earning_distributed_service_charges": cargos})
+        return fila
+
+    def test_un_renglon_secundario_con_solo_gratuity_cuenta(self):
+        filas = [self._fila("Server (Primary)", cheque="100.00", cargos="50.00"),
+                 self._fila("bartender", cargos="80.60"),
+                 self._fila("Lead")]
+        secundarios = gusto_export.dinero_en_puestos_no_primarios(filas)
+        self.assertEqual([f["title"] for f in secundarios], ["bartender"])
+        self.assertAlmostEqual(gusto_export.dinero_del_renglon(secundarios[0]), 80.60,
+                               places=2)
+
+    def test_el_diagnostico_lo_dice(self):
+        resultado = {"by_company": {"tacos-franc-bonita-llc": [
+            self._fila("Server (Primary)", cheque="100.00"),
+            self._fila("Lead", cheque="619.90", cargos="29.02")]},
+            "held_back": [], "problems": [], "revisar": [], "warnings": []}
+        texto = gusto_export.formatear_diagnostico(
+            resultado, date(2026, 10, 3), date(2026, 10, 16))
+        self.assertIn("dinero en puesto NO primario: 1 renglones, $648.92", texto)
+        self.assertIn("service charges $29.02", texto)
 
 
 class TestPrimaPorViolacion(unittest.TestCase):

@@ -117,15 +117,28 @@ exigir_acceso()
 
 # Las columnas de la vista previa: como se llaman en pantalla, de que columna del
 # CSV salen, y si son horas o dinero. El orden es el de Gusto.
+# La prima y la gratuity se rotulan con el nombre que tienen EN GUSTO. Con
+# "Prima meal" y "Gratuity" no habia como cruzar la vista previa con el archivo
+# ni con la pantalla de Gusto, y en Bonita la gratuity se leyo como meal
+# violations: es la unica columna con dolares junto a la de meal, que va vacia.
 COLUMNAS_PREVIA = (
     ("Reg", "regular_hours", "h"),
     ("OT", "overtime_hours", "h"),
     ("DT", "double_overtime_hours", "h"),
-    ("Prima meal", "missed_break_hours", "h"),
+    ("Break premium hrs", "missed_break_hours", "h"),
     ("Tips cheque", "paycheck_tips", "$"),
     ("Tips efectivo", "cash_tips", "$"),
-    ("Gratuity", "custom_earning_distributed_service_charges", "$"),
+    ("Distributed service charges", "custom_earning_distributed_service_charges", "$"),
 )
+
+# Lo que significa cada columna que se presta a confusion. Se muestra junto a
+# la vista previa porque ahi es donde se confunde.
+LEYENDA_DE_COLUMNAS = (
+    "**Break premium hrs** son los meal violations: una hora por cada violacion, "
+    "en horas y no en dolares; Gusto la paga a su tarifa regular. "
+    "**Distributed service charges** es la gratuity automatica de Toast (mesas "
+    "grandes), no son meal violations. La columna **Meal Break Violation** del "
+    "archivo va vacia a proposito: si se llenara tambien, la prima se pagaria doble.")
 _HORAS = [t for t, _, u in COLUMNAS_PREVIA if u == "h"]
 _DINERO = [t for t, _, u in COLUMNAS_PREVIA if u == "$"]
 
@@ -574,10 +587,17 @@ if resultado and vigente:
     horas_csv = resultado.get("hours_placed", 0.0)
     horas_ret = resultado.get("hours_held", 0.0)
     hueco_horas = horas_ent - horas_csv - horas_ret
+    # La prima tiene su propio cierre: no es parte de las horas trabajadas, y
+    # sin cierre una prima perdida no la detenia nada.
+    prima_ent = resultado.get("premium_reported", 0.0)
+    prima_csv = resultado.get("premium_placed", 0.0)
+    prima_ret = resultado.get("premium_held", 0.0)
+    hueco_prima = prima_ent - prima_csv - prima_ret
     # Los MISMOS umbrales que el exportador, para que la pantalla no diga que
     # cuadra cuando el exportador cree que no.
     cuadra = (abs(hueco_horas) <= gusto_export.TOLERANCIA_HORAS
-              and abs(hueco_tips) <= gusto_export.TOLERANCIA_TIPS)
+              and abs(hueco_tips) <= gusto_export.TOLERANCIA_TIPS
+              and abs(hueco_prima) <= gusto_export.TOLERANCIA_HORAS)
     # El unico candado: un descuadre que la herramienta NO pudo atribuir.
     bloqueado = bool(resultado["problems"]) or not cuadra
 
@@ -586,16 +606,14 @@ if resultado and vigente:
     accion = [a for a in (resultado.get("avisos") or []) if a["nivel"] == "accion"]
     informativos = [a for a in (resultado.get("avisos") or []) if a["nivel"] == "informativo"]
 
-    # Los tips en renglones de puesto NO primario: todavia no esta comprobado
-    # que Gusto los acepte ahi, asi que es algo a revisar antes de subir.
+    # El dinero en renglones de puesto NO primario: todavia no esta comprobado
+    # que Gusto lo acepte ahi, asi que es algo a revisar antes de subir. Es la
+    # misma funcion que usa el diagnostico, para que no vuelvan a contar distinto.
     secundarios = [
         (NOMBRE_EMPRESA.get(c, c), f) for c, filas in filas_por_empresa.items()
-        for f in filas
-        if "(Primary)" not in f["title"]
-        and (float(f["paycheck_tips"] or 0) + float(f["cash_tips"] or 0)) > 0.005
+        for f in gusto_export.dinero_en_puestos_no_primarios(filas)
     ]
-    total_secundarios = sum(float(f["paycheck_tips"] or 0) + float(f["cash_tips"] or 0)
-                            for _, f in secundarios)
+    total_secundarios = sum(gusto_export.dinero_del_renglon(f) for _, f in secundarios)
     pendientes = len({a["grupo"] for a in accion}) + (1 if secundarios else 0)
 
     st.divider()
@@ -609,9 +627,9 @@ if resultado and vigente:
             # pudieron explicar" mandaria a buscar un descuadre que no existe.
             motivo = "Hay algo que corregir antes:"
         else:
-            motivo = ("Hay horas o tips que no se pudieron explicar: el archivo "
-                      "saldria incompleto y en Gusto se veria completo. Abajo dice "
-                      "cuanto y donde.")
+            motivo = ("Hay horas, tips o prima que no se pudieron explicar: el "
+                      "archivo saldria incompleto y en Gusto se veria completo. "
+                      "Abajo dice cuanto y donde.")
         st.error(f"### ❌ No subas estos archivos\nPeriodo {periodo_txt}. {motivo}")
         for problema in resultado["problems"]:
             st.markdown(f"- {problema}")
@@ -644,8 +662,14 @@ if resultado and vigente:
                             if any((f[c] or "") for c in COLUMNAS_CON_DATO)})
             horas = (suma("regular_hours") + suma("overtime_hours")
                      + suma("double_overtime_hours"))
-            tips = (suma("paycheck_tips") + suma("cash_tips")
-                    + suma("custom_earning_distributed_service_charges"))
+            tips = suma("paycheck_tips") + suma("cash_tips")
+            cargos = suma("custom_earning_distributed_service_charges")
+            prima = suma("missed_break_hours")
+            resumen = f"{personas} personas · {horas:,.2f} h · {money(tips)} en tips"
+            if cargos > 0.005:
+                resumen += f" · {money(cargos)} en service charges"
+            if prima > 0.005:
+                resumen += f" · {prima:,.2f} h de break premium"
 
             buffer = io.StringIO()
             escritor = csv.DictWriter(buffer, fieldnames=gusto_export.GUSTO_COLUMNS,
@@ -658,7 +682,7 @@ if resultado and vigente:
                     f"⬇  {nombre}", data=buffer.getvalue(),
                     file_name=f"gusto_import_{slug}_{inicio:%Y%m%d}_{fin:%Y%m%d}.csv",
                     mime="text/csv", type="primary", width="stretch")
-                st.caption(f"{personas} personas · {horas:,.2f} h · {money(tips)} en tips")
+                st.caption(resumen)
         st.caption("Se suben en **Gusto → Pay → Run payroll → Import payroll "
                    "data**, un archivo por empresa.")
 
@@ -683,18 +707,25 @@ if resultado and vigente:
                 # tambien las contaba dos veces y hacia ver mas gente de la que hay.
                 no_personas = set(resultado.get("tips_no_persona") or {})
                 retenidos = [h for h in (resultado.get("held_back") or [])
-                             if (h["horas"] > 0.005 or h["tips"] > 0.005)
+                             if (h["horas"] > 0.005 or h["tips"] > 0.005
+                                 or h.get("prima", 0) > 0.005)
                              and h["nombre"].strip() not in no_personas]
                 horas_r = sum(h["horas"] for h in retenidos)
+                prima_r = sum(h.get("prima", 0) for h in retenidos)
                 with st.expander(f"{icono}  {titulo} — {len(retenidos)} · "
-                                 f"{horas_r:,.2f} h"):
+                                 f"{horas_r:,.2f} h"
+                                 + (f" · {prima_r:,.2f} h de prima" if prima_r > 0.005 else "")):
                     st.caption("No entran al CSV. Hay que darlos de alta en "
-                               "Gusto y volver a generar, o pagarles aparte.")
+                               "Gusto y volver a generar, o pagarles aparte. Si "
+                               "tienen break premium, tambien se les debe: es la "
+                               "prima de sus meal violations.")
                     tabla = pd.DataFrame([{
                         "Persona": h["nombre"],
                         "Sucursal": h.get("sucursal", ""),
                         "Horas": f"{h['horas']:,.2f}",
                         "Tips": money(h["tips"]),
+                        "Break premium hrs": (f"{h['prima']:,.2f}"
+                                              if h.get("prima", 0) > 0.005 else ""),
                         "Por que": h["motivo"],
                     } for h in sorted(retenidos, key=lambda x: -x["horas"])])
                     st.dataframe(tabla, hide_index=True, width="stretch")
@@ -705,17 +736,20 @@ if resultado and vigente:
                     st.markdown(f"- {a['texto']}")
 
         if secundarios:
-            with st.expander(f"🧾  Tips en un puesto que no es el principal — "
+            with st.expander(f"🧾  Dinero en un puesto que no es el principal — "
                              f"{len(secundarios)} · {money(total_secundarios)}"):
-                st.caption("Todavia no esta comprobado que Gusto acepte tips en "
-                           "estos renglones. Al subir, revisa en la pantalla de "
-                           "Gusto que cayeron donde dice aqui ANTES de procesar.")
+                st.caption("Todavia no esta comprobado que Gusto acepte tips ni "
+                           "service charges en estos renglones. Al subir, revisa "
+                           "en la pantalla de Gusto que cayeron donde dice aqui "
+                           "ANTES de procesar.")
                 st.dataframe(pd.DataFrame([{
                     "Empresa": empresa,
                     "Persona": f"{f['last_name']}, {f['first_name']}",
                     "Puesto": f["title"],
                     "Tips cheque": f["paycheck_tips"] or "",
                     "Tips efectivo": f["cash_tips"] or "",
+                    "Distributed service charges":
+                        f["custom_earning_distributed_service_charges"] or "",
                 } for empresa, f in secundarios]), hide_index=True,
                     width="stretch")
 
@@ -725,8 +759,10 @@ if resultado and vigente:
     # escriben en el CSV, asi que lo que se ve es exactamente lo que entra.
     if filas_por_empresa:
         st.markdown("#### Asi entra a Gusto")
-        st.caption("Un renglon por puesto, tal cual trae el archivo. Las celdas "
-                   "vacias no tocan nada en Gusto: dejan el valor que ya tenga.")
+        st.caption("Un renglon por puesto, con las columnas del archivo que traen "
+                   "datos. Las celdas vacias no tocan nada en Gusto: dejan el "
+                   "valor que ya tenga.")
+        st.caption(LEYENDA_DE_COLUMNAS)
 
         pestanas = st.tabs([NOMBRE_EMPRESA.get(c, c) for c in filas_por_empresa])
         for pestana, (company, filas) in zip(pestanas, filas_por_empresa.items()):
@@ -777,6 +813,9 @@ if resultado and vigente:
             {"": "Tips", "Entro": money(tips_rep), "Al CSV": money(tips_csv),
              "Retenido": money(tips_ret), "Sin dueño": money(tips_sin_dueno),
              "Sin explicar": money(hueco_tips)},
+            {"": "Break premium hrs", "Entro": f"{prima_ent:,.2f}",
+             "Al CSV": f"{prima_csv:,.2f}", "Retenido": f"{prima_ret:,.2f}",
+             "Sin dueño": "", "Sin explicar": f"{hueco_prima:,.2f}"},
         ]), hide_index=True, width="stretch")
 
     if informativos:
@@ -787,8 +826,9 @@ if resultado and vigente:
 
     reporte = gusto_export.formatear_diagnostico(resultado, inicio, fin)
     with st.expander("Diagnostico tecnico — para reportar un problema"):
-        st.caption("Si algo no cuadra, descarga esto y mandalo. Son conteos y "
-                   "totales, sin nombres ni correos.")
+        st.caption("Si algo no cuadra, descarga esto y mandalo. Trae conteos y "
+                   "totales y, al final, los avisos, que si llevan nombres de "
+                   "empleados; no trae correos ni telefonos.")
         st.download_button(
             "Descargar el diagnostico", data=reporte,
             file_name=f"diagnostico_{inicio:%Y%m%d}_{fin:%Y%m%d}.txt",

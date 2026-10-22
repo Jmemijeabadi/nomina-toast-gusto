@@ -781,7 +781,8 @@ def aggregate_for_pay_period(client: ToastClient, start: date, end_inclusive: da
             row["gusto_company"] = location["company"]
             audited.append(row)
 
-    # La prima de meal se topa en 1 hora por empleado por dia de trabajo. El
+    # La prima de meal sale de horas_de_prima: hoy una hora por cada violacion,
+    # sin tope diario (decision del 2026-10-20). El
     # regular rate del dia es el promedio ponderado por horas pagadas e incluye
     # los service charges distribuidos, que legalmente son salario: Ferra v.
     # Loews exige el "regular rate of compensation", no el base wage. Los tips
@@ -794,8 +795,9 @@ def aggregate_for_pay_period(client: ToastClient, start: date, end_inclusive: da
         """Identidad estable de la persona: el id de Gusto, no el GUID de Toast.
 
         Una persona que trabaja en las dos locations tiene DOS GUID de Toast. Si
-        el tope de 1 h por dia se llavea por GUID, esa persona cobra 2 h de prima
-        por un solo dia de trabajo.
+        la prima se llaveara por GUID, se le atribuiria una vez por cada GUID; por
+        identidad se suma por persona y se atribuye a una sola empresa. (Con el
+        tope viejo de 1 h por dia, llavear por GUID le pagaba 2 h por un dia.)
         """
         employee = employees.get(guid) or {}
         return employee.get("gusto_employee_id") or f"SIN-MAPEO::{guid}"
@@ -885,8 +887,8 @@ def aggregate_for_pay_period(client: ToastClient, start: date, end_inclusive: da
         record["service_charges"] += row["non_cash_service_charges"] + row["cash_service_charges"]
         record["shifts"] += 1
 
-    # La prima del dia ya viene topada por persona. Si la persona trabaja en dos
-    # LLCs se le atribuye a una sola vez, no una por empresa.
+    # La prima ya viene sumada por persona (horas_de_prima). Si la persona trabaja
+    # en dos LLCs se le atribuye a una sola vez, no una por empresa.
     premium_claimed = set()
     for record in sorted(by_identity.values(), key=lambda r: r["gusto_company"]):
         premium = premium_by_employee.get(record["identity"])

@@ -8,10 +8,8 @@ Genera por cada empresa de Gusto:
     exceptions_<inicio>_<fin>.csv            lo que hay que revisar a mano
 
 El staging NO es el CSV de Gusto y no se sube: es el intermedio para cuadrar.
-El generador del CSV de Gusto todavia no existe porque falta cerrar dos cosas
-(la columna de tips, y el inicio de semana de la cuenta para la columna
-workweeks), y porque falta calcular el overtime de California desde los punches
-en vez de repetir el de Toast.
+El CSV de Gusto lo genera gusto_export.py (y la app), con el overtime de
+California calculado desde los punches y los tips del reporte de Toast.
 
 Si el periodo trae algo que pagaria mal, el comando sale con codigo distinto de
 cero y lo dice. No produce nada "listo" mientras haya un blocker.
@@ -171,7 +169,7 @@ def main() -> int:
         return 4
 
     print(f"  Sin bloqueos. Excepciones en {exceptions_path}")
-    print("  Aun asi el staging no se sube: falta el generador del CSV de Gusto.")
+    print("  Aun asi el staging no se sube: el CSV de Gusto lo genera gusto_export.py.")
     return 0
 
 
