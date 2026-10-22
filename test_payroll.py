@@ -1291,6 +1291,32 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertEqual(len(fila), 1)
         self.assertEqual(fila.iloc[0]["Break premium hrs"], "2.00")
 
+    def test_el_dinero_en_puesto_no_principal_cuenta_la_gratuity(self):
+        import copy
+        r = copy.deepcopy(self.base)
+        filas = r["by_company"]["tacos-franc-bonita-llc"]
+        victima = next(f for f in filas if "(Primary)" not in f["title"])
+        columna = "custom_earning_distributed_service_charges"
+        victima[columna] = f"{float(victima[columna] or 0) + 12.34:.2f}"
+        esperado = sum(gusto_export.dinero_del_renglon(f)
+                       for filas_ in r["by_company"].values()
+                       for f in gusto_export.dinero_en_puestos_no_primarios(filas_))
+        etiquetas = [e.label for e in self._app(r).expander
+                     if "puesto que no es el principal" in (e.label or "")]
+        self.assertEqual(len(etiquetas), 1)
+        self.assertIn(f"${esperado:,.2f}", etiquetas[0])
+
+    def test_la_lista_de_retenidos_sale_aunque_no_haya_avisos_de_alta(self):
+        """Quien queda retenido por su job (y no por falta de alta) solo tenia
+        avisos del grupo de jobs: la lista de retenidos, a la que remiten los
+        avisos, no salia."""
+        import copy
+        r = copy.deepcopy(self.base)
+        self.assertTrue(any(h["horas"] > 0 for h in r["held_back"]))
+        r["avisos"] = [a for a in r["avisos"] if a["grupo"] != "alta_en_gusto"]
+        tablas = [m for m in self._marcos(self._app(r)) if "Por que" in m.columns]
+        self.assertEqual(len(tablas), 1, "la lista de retenidos no salio")
+
     def test_con_un_solo_reporte_genera_esa_sucursal(self):
         at, boton = self._app_con_reportes([self._archivo("NC")])
         self.assertFalse(boton.disabled, "con un reporte ya se debe poder generar")
@@ -1618,6 +1644,107 @@ class TestLaPrimaNoSePierde(unittest.TestCase):
                                msg=f"la prima se pago mas de una vez: {por_empresa}")
         self.assertEqual(sum(1 for v in por_empresa.values() if v > 0), 1,
                          "la prima de una persona va en UNA empresa")
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+
+    def test_si_la_prima_no_cierra_bloquea(self):
+        """El mismo id en el template de las dos empresas: la prima se escribe en
+        los dos renglones primarios. Ningun otro cuadre lo ve; este lo detiene."""
+        self.esc.renglon_de_gusto("Gaslamp Quarter", "Ejemplo", "Ana", "n00001",
+                                  primario=True)
+        r = self.esc.correr(self.INICIO, self.FIN)
+        self.assertAlmostEqual(r["premium_reported"], 1.0, places=2)
+        self.assertAlmostEqual(r["premium_placed"], 2.0, places=2)
+        candado = [a for a in r["avisos"] if a["tipo"] == "cuadre_prima"]
+        self.assertEqual([a["nivel"] for a in candado], ["bloquea"])
+        self.assertEqual(candado[0]["grupo"], "cuadre")
+        self.assertIn(candado[0]["texto"], r["problems"])
+
+    def test_un_retenido_con_prima_y_sin_horas_no_se_borra(self):
+        """Un turno cerrado con regularHours en 0 dispara la violacion por el
+        tiempo trabajado: la persona queda con 0 h y con prima. La limpieza de
+        retenidos tira a quien no tiene horas ni tips, y no debe tirar su prima."""
+        rita = self.esc.empleado("National City", "Sinalta", "Rita")
+        self.esc.turno(rita, "2026-09-08", horas=7.0)["regularHours"] = 0.0
+        r = self.esc.correr(self.INICIO, self.FIN)
+        suya = [h for h in r["held_back"] if h["nombre"].startswith("Sinalta")]
+        self.assertEqual(len(suya), 1)
+        self.assertAlmostEqual(suya[0]["horas"], 0.0, places=2)
+        self.assertAlmostEqual(suya[0]["prima"], 1.0, places=2)
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+        self._sin_candado(r)
+
+    def test_la_prima_de_horas_sin_destino_sale_en_su_aviso(self):
+        """Id fuera del template y job sin mapeo: queda retenido por su job (aviso
+        del grupo de jobs, no de alta), y ese aviso no decia la prima."""
+        self.esc.jobs_sin_mapear = {"Raro"}
+        quien = self.esc.empleado("Gaslamp Quarter", "Fuera", "Eliseo",
+                                  gusto_id="zzz999", en_template=False)
+        self.esc.turno(quien, "2026-09-08", horas=7.0, job="Raro")
+        r = self.esc.correr(self.INICIO, self.FIN)
+        suya = [h for h in r["held_back"] if h["nombre"].startswith("Fuera")]
+        self.assertEqual(len(suya), 1)
+        self.assertAlmostEqual(suya[0]["prima"], 1.0, places=2)
+        avisos = [a["texto"] for a in r["avisos"]
+                  if a["tipo"] == "horas_sin_renglon" and "Fuera" in a["texto"]]
+        self.assertTrue(any("1.00 h de prima" in t for t in avisos), avisos)
+        self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
+
+    def _doble(self, **registro_gaslamp):
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        a = esc.empleado("National City", "Doble", "Irma", gusto_id="n00009",
+                         person_key="p-irma", confirmada="si")
+        b = esc.empleado("Gaslamp Quarter", "Doble", "Irma",
+                         **{"gusto_id": "g00009", "person_key": "p-irma",
+                            "confirmada": "si", **registro_gaslamp})
+        return esc, a, b
+
+    @staticmethod
+    def _prima_por_empresa(r):
+        return {c: sum(float(f["missed_break_hours"] or 0) for f in filas)
+                for c, filas in r["by_company"].items()}
+
+    def test_va_a_la_empresa_donde_tiene_mas_horas(self):
+        """La regla documentada: la prima de quien esta en dos empresas se paga
+        una vez, en la empresa donde tiene mas horas, aunque la violacion haya
+        sido en la otra."""
+        esc, a, b = self._doble()
+        esc.turno(a, "2026-09-07", horas=8.0, con_meal=True)
+        esc.turno(a, "2026-09-08", horas=8.0, con_meal=True)
+        esc.turno(b, "2026-09-09", horas=7.0)          # la violacion, en Gaslamp
+        r = esc.correr(self.INICIO, self.FIN)
+        self.assertEqual(self._prima_por_empresa(r),
+                         {"tacos-franc-bonita-llc": 1.0, "tacos-franc-gaslamp-llc": 0.0})
+
+    def test_prefiere_el_id_que_tiene_renglon(self):
+        """Un id viejo fuera del template, aunque tenga mas horas, no se lleva la
+        prima: saldria del CSV aunque el otro id si tiene renglon."""
+        esc, a, b = self._doble(gusto_id="a-viejo", en_template=False)
+        esc.turno(a, "2026-09-07", horas=7.0)
+        esc.turno(b, "2026-09-08", horas=9.0, con_meal=True)
+        r = esc.correr(self.INICIO, self.FIN)
+        self.assertAlmostEqual(r["premium_placed"], 1.0, places=2)
+        self.assertAlmostEqual(r["premium_held"], 0.0, places=2)
+        self.assertAlmostEqual(self._prima_por_empresa(r)["tacos-franc-bonita-llc"], 1.0,
+                               places=2)
+
+    def test_con_dos_registros_retenidos_va_al_de_mas_horas(self):
+        """Dos registros sin alta de la misma persona confirmada: la prima va en el
+        de mas horas, no en el primero por orden alfabetico. De eso depende que
+        LLC se la paga a mano."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        nc = esc.empleado("National City", "Nueva", "Lola", person_key="p-lola",
+                          confirmada="si")
+        gl = esc.empleado("Gaslamp Quarter", "Nueva", "Lola", person_key="p-lola",
+                          confirmada="si")
+        esc.turno(nc, "2026-09-07", horas=7.0)                  # la violacion
+        esc.turno(nc, "2026-09-08", horas=9.0, con_meal=True)
+        esc.turno(gl, "2026-09-09", horas=4.0)
+        r = esc.correr(self.INICIO, self.FIN)
+        por_sucursal = {h["sucursal"]: h["prima"] for h in r["held_back"]
+                        if h["nombre"].startswith("Nueva")}
+        self.assertEqual(por_sucursal, {"National City": 1.0, "Gaslamp Quarter": 0.0})
         self.assertAlmostEqual(self._hueco(r), 0.0, places=2)
 
 

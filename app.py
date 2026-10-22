@@ -614,7 +614,21 @@ if resultado and vigente:
         for f in gusto_export.dinero_en_puestos_no_primarios(filas)
     ]
     total_secundarios = sum(gusto_export.dinero_del_renglon(f) for _, f in secundarios)
-    pendientes = len({a["grupo"] for a in accion}) + (1 if secundarios else 0)
+
+    # Quien no entra al CSV. Se arma aqui, y no dentro del grupo "alta_en_gusto",
+    # porque tambien queda retenido quien SI tiene alta pero cuyas horas no tienen
+    # renglon (aviso del grupo "jobs"). Los avisos remiten a "la lista de
+    # retenidos", y antes esa lista solo salia si ademas habia alguien sin alta:
+    # con una sola persona retenida por su job, su prima no salia junto a su
+    # nombre en ningun lado. Solo PERSONAS: las cuentas de pedidos en linea no
+    # son gente y ya salen en "Tips que no llegan a nadie".
+    no_personas = set(resultado.get("tips_no_persona") or {})
+    retenidos = [h for h in (resultado.get("held_back") or [])
+                 if (h["horas"] > 0.005 or h["tips"] > 0.005
+                     or h.get("prima", 0) > 0.005)
+                 and h["nombre"].strip() not in no_personas]
+    grupos_pendientes = {a["grupo"] for a in accion} | ({"alta_en_gusto"} if retenidos else set())
+    pendientes = len(grupos_pendientes) + (1 if secundarios else 0)
 
     st.divider()
 
@@ -696,20 +710,12 @@ if resultado and vigente:
 
         for grupo in ORDEN_DE_GRUPOS:
             items = por_grupo.get(grupo)
-            if not items:
+            if not items and not (grupo == "alta_en_gusto" and retenidos):
                 continue
             icono = ICONO_GRUPO.get(grupo, "•")
             titulo = gusto_export.TITULOS_DE_GRUPO.get(grupo, grupo)
 
             if grupo == "alta_en_gusto":
-                # Solo PERSONAS. Las cuentas de pedidos en linea no son gente y
-                # ya salen en "Tips que no llegan a nadie": listarlas aqui
-                # tambien las contaba dos veces y hacia ver mas gente de la que hay.
-                no_personas = set(resultado.get("tips_no_persona") or {})
-                retenidos = [h for h in (resultado.get("held_back") or [])
-                             if (h["horas"] > 0.005 or h["tips"] > 0.005
-                                 or h.get("prima", 0) > 0.005)
-                             and h["nombre"].strip() not in no_personas]
                 horas_r = sum(h["horas"] for h in retenidos)
                 prima_r = sum(h.get("prima", 0) for h in retenidos)
                 with st.expander(f"{icono}  {titulo} — {len(retenidos)} · "
@@ -723,7 +729,7 @@ if resultado and vigente:
                         "Persona": h["nombre"],
                         "Sucursal": h.get("sucursal", ""),
                         "Horas": f"{h['horas']:,.2f}",
-                        "Tips": money(h["tips"]),
+                        "Tips y service charges": money(h["tips"]),
                         "Break premium hrs": (f"{h['prima']:,.2f}"
                                               if h.get("prima", 0) > 0.005 else ""),
                         "Por que": h["motivo"],
@@ -810,7 +816,7 @@ if resultado and vigente:
             {"": "Horas", "Entro": f"{horas_ent:,.2f}", "Al CSV": f"{horas_csv:,.2f}",
              "Retenido": f"{horas_ret:,.2f}", "Sin dueño": "",
              "Sin explicar": f"{hueco_horas:,.2f}"},
-            {"": "Tips", "Entro": money(tips_rep), "Al CSV": money(tips_csv),
+            {"": "Tips y service charges", "Entro": money(tips_rep), "Al CSV": money(tips_csv),
              "Retenido": money(tips_ret), "Sin dueño": money(tips_sin_dueno),
              "Sin explicar": money(hueco_tips)},
             {"": "Break premium hrs", "Entro": f"{prima_ent:,.2f}",

@@ -696,6 +696,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     for row in audited:
         if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
             continue
+        if (employees.get(row["employee_guid"]) or {}).get("excluir"):
+            continue        # sin prima: no es una persona que se pague
         if "Missed Meal Break" in row["violations"]:
             acumulado = perdidos[row["location"]]
             acumulado["turnos"] += 1
@@ -722,16 +724,33 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     horas_por_pago = defaultdict(float)
     for (pago, _company, _title), cell in hours_by_cell.items():
         horas_por_pago[pago] += cell["regular"] + cell["overtime"] + cell["double"]
+    # Para desempatar: horas trabajadas por id (tambien las que no tienen
+    # destino, que no llegan a ninguna celda) y que ids tienen renglon.
+    horas_trabajadas_por_pago = defaultdict(float)
+    for row in audited:
+        if not (start <= ca_overtime.parse_business_date(row["business_date"]) <= end_inclusive):
+            continue
+        employee = employees.get(row["employee_guid"]) or {}
+        if employee.get("gusto_employee_id") and not employee.get("excluir"):
+            horas_trabajadas_por_pago[employee["gusto_employee_id"]] += row["payable_hours"]
+    pagos_con_renglon = {pago for (_company, pago) in primary_titles}
     pagos_de_persona = defaultdict(set)
     for guid, employee in employees.items():
-        if employee.get("gusto_employee_id"):
+        if employee.get("gusto_employee_id") and not employee.get("excluir"):
             pagos_de_persona[person_of(guid)].add(employee["gusto_employee_id"])
     destino_de_prima = {}
     for persona, horas_prima in premium_por_persona.items():
         pagos = pagos_de_persona.get(persona)
         if not pagos:
             continue
-        destino = max(sorted(pagos), key=lambda p: horas_por_pago.get(p, 0.0))
+        # Primero un id con renglon en el template, despues la empresa con mas
+        # horas colocadas, despues la de mas horas trabajadas. Sin lo primero, un
+        # id viejo fuera del template podia ganar el empate y sacar la prima del
+        # CSV aunque el otro id si tuviera renglon; sin lo ultimo, con todo en
+        # cero decidia el orden alfabetico del id.
+        destino = max(sorted(pagos), key=lambda p: (p in pagos_con_renglon,
+                                                    horas_por_pago.get(p, 0.0),
+                                                    horas_trabajadas_por_pago.get(p, 0.0)))
         destino_de_prima[persona] = destino
         premium_by_identity[destino] += horas_prima
 
@@ -1145,11 +1164,23 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     # Una fila por REGISTRO de Toast, no por nombre: antes dos registros de la
     # misma persona (uno por sucursal) colapsaban y las horas de uno se
     # perdian, porque hours_by_name ASIGNABA en vez de acumular.
+    # Si una persona confirmada tiene varios registros retenidos, su prima va
+    # en el de mas horas, como la que si entra al CSV va a la empresa donde
+    # tiene mas horas. Antes iba al primero por orden alfabetico, y eso decidia
+    # que LLC se la paga a mano.
+    registro_de_prima = {}
+    for guid in pending_guids:
+        clave = person_of(guid)
+        actual = registro_de_prima.get(clave)
+        if actual is None or horas_por_guid.get(guid, 0.0) > horas_por_guid.get(actual, 0.0):
+            registro_de_prima[clave] = guid
+
     for guid in pending_guids:
         empleado = employees[guid]
         display = empleado["display"]
         horas = horas_por_guid.get(guid, 0.0)
-        prima = prima_retenida.pop(person_of(guid), 0.0)
+        prima = (prima_retenida.pop(person_of(guid), 0.0)
+                 if registro_de_prima.get(person_of(guid)) == guid else 0.0)
         held_back.append({
             "nombre": display.strip(),
             "sucursal": empleado["location"],
@@ -1173,22 +1204,23 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         if guid in ya_listados or horas <= 0.005:
             continue
         empleado = employees.get(guid) or {}
+        prima = prima_retenida.pop(empleado.get("gusto_employee_id") or person_of(guid), 0.0)
         held_back.append({
             "nombre": (empleado.get("display") or guid).strip(),
             "sucursal": empleado.get("location", ""),
             "horas": round(horas, 2),
             "tips": 0.0,
-            "prima": round(prima_retenida.pop(
-                empleado.get("gusto_employee_id") or person_of(guid), 0.0), 2),
+            "prima": round(prima, 2),
             "motivo": motivo_sin_destino.get(guid, "sus horas no tienen destino"),
             "que_hacer": ("mapear ese job en job_map.csv o corregir el job del "
                           "turno en Toast, y volver a generar"),
         })
         avisar("accion", "horas_sin_renglon",
             f"RETENIDO: {(empleado.get('display') or guid).strip()} con "
-            f"{horas:.2f} h no entra al CSV porque "
+            f"{horas:.2f} h{f' y {prima:.2f} h de prima de meal' if prima > 0.005 else ''} "
+            f"no entra al CSV porque "
             f"{motivo_sin_destino.get(guid, 'sus horas no tienen destino')}. "
-            f"Esas horas quedan para pagarlas aparte.")
+            f"Eso queda para pagarlo aparte.")
 
     # El caso que no tenia aviso: tiene id de Gusto y ese id no esta en ningun
     # template.
@@ -1575,7 +1607,8 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     w(f"  horas  entro {hr:>10,.2f}  al CSV {hc:>10,.2f}  retenido {hh:>9,.2f}"
       f"  SIN EXPLICAR {hr - hc - hh:>+9,.2f}")
     w(f"  tips   entro {tr:>10,.2f}  al CSV {tc:>10,.2f}  retenido {th:>9,.2f}"
-      f"  sin dueno {tn:>8,.2f}  SIN EXPLICAR {tr - tc - th - tn:>+9,.2f}")
+      f"  sin dueno {tn:>8,.2f}  SIN EXPLICAR {tr - tc - th - tn:>+9,.2f}"
+      f"   (tips + service charges)")
     pr, pc, ph = (resultado.get("premium_reported", 0.0),
                   resultado.get("premium_placed", 0.0),
                   resultado.get("premium_held", 0.0))
@@ -1736,7 +1769,7 @@ def main() -> int:
               f"{sum(h['horas'] for h in held):.2f} h sin pagar:")
         for item in held:
             print(f"    {item['nombre']:<28} {item['horas']:>8.2f} h  "
-                  f"${item.get('tips', 0):>9,.2f} de tips  "
+                  f"${item.get('tips', 0):>9,.2f} de tips y service charges  "
                   f"{item.get('prima', 0):>5.2f} h de prima")
         print(f"  Detalle: {held_path}")
         print("  " + "!" * 60)
