@@ -198,12 +198,56 @@ def tabla_totales(filas: list) -> None:
     st.dataframe(estilo, hide_index=True, width="stretch")
 
 
+# Las columnas de dinero de la lista de lo que se captura a mano. Las de tips
+# llevan el nombre del campo de Gusto; la ultima es el total del renglon.
+_DINERO_A_MANO = ["Paycheck tips", "Cash tips", "Gratuity", "Tips and gratuity"]
+
+
+def marco_a_mano(a_mano: list) -> pd.DataFrame:
+    """La lista de lo que se captura a mano, un renglon por persona y puesto.
+
+    Es una funcion aparte para poder probarla sin correr la app: "Tips and
+    gratuity" es el numero que copia quien captura, y una columna cruzada o un
+    total sin la gratuity no los atrapaba ninguna prueba sin credenciales. Vacio
+    y no $0.00 donde no hay nada.
+    """
+    return pd.DataFrame([{
+        "Empresa": NOMBRE_EMPRESA.get(t["company"], t["company"]),
+        "Empleado": t["nombre"],
+        "Puesto": t["puesto"],
+        "Paycheck tips": t["cheque"] or None,
+        "Cash tips": t["efectivo"] or None,
+        "Gratuity": t["gratuity"] or None,
+        "Tips and gratuity": round(t["cheque"] + t["efectivo"] + t["gratuity"], 2),
+    } for t in sorted(a_mano, key=lambda t: (
+        t["company"], t["nombre"], "(Primary)" not in t["puesto"]))],
+        columns=["Empresa", "Empleado", "Puesto", *_DINERO_A_MANO])
+
+
 def huella_de_entradas(inicio, fin, subidos: dict) -> tuple:
     """Lo que determina un resultado: el periodo y QUE archivos se subieron."""
     archivos = tuple(sorted(
         (empresa, getattr(a, "name", ""), getattr(a, "size", 0))
         for empresa, a in (subidos or {}).items()))
     return (inicio, fin, archivos)
+
+
+def motivo_para_volver_a_generar(resultado: dict, huella_guardada, huella_actual,
+                                 version_actual: str) -> str:
+    """Por que un resultado guardado en la sesion ya no se muestra; vacio si si.
+
+    La huella cubre el periodo y los reportes; la version, el codigo. La sesion
+    sobrevive a una actualizacion de la app, y sin la version un resultado de
+    antes se seguia mostrando, con sus descargas, debajo de las reglas nuevas.
+    """
+    if resultado.get("version") != version_actual:
+        return ("La herramienta se actualizo desde que generaste estos archivos, "
+                "asi que se armaron con las reglas de antes. Dale **Generar** "
+                "otra vez.")
+    if huella_guardada != huella_actual:
+        return ("Cambiaste el periodo o los reportes desde la ultima vez. "
+                "Dale **Generar** otra vez para ver los archivos que corresponden.")
+    return ""
 
 
 def money(value: float) -> str:
@@ -553,10 +597,14 @@ if st.button("Generar", type="primary", disabled=not subidos or bool(con_problem
 # tips y no se volvia a generar, la pantalla seguia mostrando el cuadre y los
 # archivos de la corrida vieja, y se podia bajar un CSV que no correspondia.
 resultado = st.session_state.get("resultado")
-vigente = st.session_state.get("huella") == huella_de_entradas(inicio, fin, subidos)
-if resultado and not vigente:
-    st.info("Cambiaste el periodo o los reportes desde la ultima vez. "
-            "Dale **Generar** otra vez para ver los archivos que corresponden.")
+motivo = (motivo_para_volver_a_generar(
+              resultado, st.session_state.get("huella"),
+              huella_de_entradas(inicio, fin, subidos),
+              gusto_export.VERSION_DEL_RESULTADO)
+          if resultado else "")
+vigente = not motivo
+if resultado and motivo:
+    st.info(motivo)
 if resultado and vigente:
 
     # ════════════════════════════════════════════════════════════════════
@@ -582,8 +630,8 @@ if resultado and vigente:
     # Tercer bucket: tips que el pool dejo en cuentas que no son personas. Si no
     # se resta, la pantalla reporta un hueco que no existe y asusta de gratis.
     tips_sin_dueno = sum(resultado.get("tips_no_persona", {}).values())
-    # Cuarto: los tips de las empresas donde se capturan a mano (TIPS_A_MANO).
-    # No van al archivo, pero tampoco faltan.
+    # Cuarto: los tips y la gratuity de las empresas donde se capturan a mano
+    # (TIPS_A_MANO). No van al archivo, pero tampoco faltan.
     tips_a_mano = resultado.get("tips_a_mano", 0.0)
     a_mano = resultado.get("tips_a_mano_por_renglon") or []
     hueco_tips = tips_rep - tips_csv - tips_ret - tips_sin_dueno - tips_a_mano
@@ -684,7 +732,7 @@ if resultado and vigente:
             cargos = suma("custom_earning_distributed_service_charges")
             prima = suma("missed_break_hours")
             # "$0.00 en tips" se leeria como que nadie tuvo tips.
-            de_tips = ("tips a mano" if company in gusto_export.TIPS_A_MANO
+            de_tips = ("tips y gratuity a mano" if company in gusto_export.TIPS_A_MANO
                        else f"{money(tips)} en tips")
             resumen = f"{personas} personas · {horas:,.2f} h · {de_tips}"
             if cargos > 0.005:
@@ -753,17 +801,11 @@ if resultado and vigente:
                                "archivo esas columnas van vacias, asi que volver a "
                                "importarlo no borra lo que captures. Los montos son "
                                "los del reporte de tips, con el nombre y el puesto "
-                               "como estan en Gusto.")
-                    marco = pd.DataFrame([{
-                        "Empresa": NOMBRE_EMPRESA.get(t["company"], t["company"]),
-                        "Empleado": t["nombre"],
-                        "Puesto": t["puesto"],
-                        "Paycheck tips": t["cheque"] or None,
-                        "Cash tips": t["efectivo"] or None,
-                    } for t in sorted(a_mano, key=lambda t: (
-                        t["company"], t["nombre"], "(Primary)" not in t["puesto"]))])
-                    st.dataframe(marco.style.format(
-                        "${:,.2f}", subset=["Paycheck tips", "Cash tips"], na_rep=""),
+                               "como estan en Gusto. La ultima columna es el total "
+                               "de cada renglon, su 'Tips and gratuity after "
+                               "pooling'.")
+                    st.dataframe(marco_a_mano(a_mano).style.format(
+                        "${:,.2f}", subset=_DINERO_A_MANO, na_rep=""),
                         hide_index=True, width="stretch")
                 continue
 
@@ -804,8 +846,9 @@ if resultado and vigente:
         for pestana, (company, filas) in zip(pestanas, filas_por_empresa.items()):
             with pestana:
                 if company in gusto_export.TIPS_A_MANO:
-                    st.caption("En esta empresa los tips no van en el archivo: "
-                               "Tips cheque y Tips efectivo salen vacios y se "
+                    st.caption("En esta empresa los tips y la gratuity no van en "
+                               "el archivo: Tips cheque, Tips efectivo y "
+                               "Distributed service charges salen vacios y se "
                                "capturan a mano en Gusto. La lista esta en "
                                "**Antes de subir**.")
                 con_dato = [f for f in filas

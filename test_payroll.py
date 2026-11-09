@@ -1215,18 +1215,29 @@ class TestLaPantallaDeResultados(unittest.TestCase):
                              f"'{p}' recibe efectivo y quedo en 'solo cheque'")
 
     def test_los_totales_de_pantalla_son_los_del_archivo(self):
+        """De las dos empresas: Bonita ya no lleva dinero en el archivo, y solo
+        con ella las columnas de $ se comparaban 0.00 contra 0.00."""
         _, totales = self._tablas(self.base)
-        bonita = self.base["by_company"]["tacos-franc-bonita-llc"]
-        en_pantalla = totales[0].iloc[0]
+        empresas = sorted(c for c, filas in self.base["by_company"].items() if filas)
+        self.assertEqual(len(totales), len(empresas), "una tabla de totales por empresa")
         pares = (("Reg", "regular_hours"), ("OT", "overtime_hours"),
                  ("Break premium hrs", "missed_break_hours"),
                  ("Tips cheque", "paycheck_tips"), ("Tips efectivo", "cash_tips"),
                  ("Distributed service charges",
                   "custom_earning_distributed_service_charges"))
-        for titulo, col in pares:
-            archivo = sum(float(f[col]) if (f[col] or "").strip() else 0.0 for f in bonita)
-            self.assertAlmostEqual(float(en_pantalla[titulo]), archivo, places=2,
-                                   msg=f"el total de '{titulo}' en pantalla no es el del CSV")
+        for tabla, company in zip(totales, empresas):
+            filas = self.base["by_company"][company]
+            en_pantalla = tabla.iloc[0]
+            for titulo, col in pares:
+                archivo = sum(float(f[col]) if (f[col] or "").strip() else 0.0
+                              for f in filas)
+                with self.subTest(empresa=company, columna=titulo):
+                    self.assertAlmostEqual(
+                        float(en_pantalla[titulo]), archivo, places=2,
+                        msg=f"el total de '{titulo}' en pantalla no es el del CSV")
+        gaslamp = self.base["by_company"]["tacos-franc-gaslamp-llc"]
+        self.assertGreater(sum(float(f["paycheck_tips"] or 0) for f in gaslamp), 0,
+                           "sin dinero en ninguna empresa la prueba no compara nada")
 
     def test_el_efectivo_en_un_puesto_que_no_lo_recibe_se_ve(self):
         """Si la columna se quitara de 'solo cheque', ese dinero seria invisible."""
@@ -1346,8 +1357,9 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertIn("Gaslamp", avisos, "no dijo que Gaslamp quedo sin generar")
 
     def test_los_tips_a_mano_se_listan_antes_de_subir(self):
-        """El archivo de Bonita va sin tips y se ve completo: la lista con la
-        que se capturan tiene que estar en pantalla, y sumar lo mismo."""
+        """El archivo de Bonita va sin tips ni gratuity y se ve completo: la
+        lista con la que se capturan tiene que estar en pantalla, y sumar lo
+        mismo."""
         self.assertGreater(self.base["tips_a_mano"], 0)
         at = self._app(self.base)
         etiquetas = [e.label for e in at.expander if "a mano" in (e.label or "")]
@@ -1355,9 +1367,33 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertIn(f"${self.base['tips_a_mano']:,.2f}", etiquetas[0])
         tabla = next(m for m in self._marcos(at) if "Paycheck tips" in m.columns)
         self.assertEqual(len(tabla), len(self.base["tips_a_mano_por_renglon"]))
-        self.assertAlmostEqual(
-            tabla["Paycheck tips"].fillna(0).sum() + tabla["Cash tips"].fillna(0).sum(),
-            self.base["tips_a_mano"], places=2)
+        self.assertGreater(tabla["Gratuity"].fillna(0).sum(), 0,
+                           "en ese periodo Bonita si tuvo gratuity")
+        partes = sum(tabla[c].fillna(0).sum()
+                     for c in ("Paycheck tips", "Cash tips", "Gratuity"))
+        self.assertAlmostEqual(partes, self.base["tips_a_mano"], places=2)
+        self.assertAlmostEqual(tabla["Tips and gratuity"].sum(), self.base["tips_a_mano"],
+                               places=2, msg="el total de cada renglon es lo que se "
+                                             "captura")
+        # Renglon por renglon: con solo sumas, dos columnas cruzadas pasaban.
+        esperado = de_app("NOMBRE_EMPRESA", "_DINERO_A_MANO", "marco_a_mano")[
+            "marco_a_mano"](self.base["tips_a_mano_por_renglon"])
+        self.assertEqual(montos(tabla), montos(esperado))
+
+    def test_un_resultado_de_otra_version_no_se_pinta(self):
+        """Ni el cuadre ni las descargas: se armo con las reglas de antes."""
+        import copy
+        r = copy.deepcopy(self.base)
+        r["version"] = "de-antes"
+        at = self._app(r)
+        botones = [b for b in at.get("download_button") if "⬇" in (b.label or "")]
+        self.assertEqual(botones, [])
+        self.assertIn("se actualizo", " ".join(i.value for i in at.info))
+
+    def test_la_pestana_de_bonita_dice_que_va_sin_tips_ni_gratuity(self):
+        textos = " ".join(c.value for c in self._app(self.base).caption)
+        self.assertIn("Tips cheque, Tips efectivo y Distributed service charges salen "
+                      "vacios", textos)
 
     def test_el_cuadre_cuenta_lo_que_va_a_mano(self):
         cuadre = next(m for m in self._marcos(self._app(self.base)) if "Entro" in m.columns)
@@ -1367,26 +1403,85 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertAlmostEqual(hueco, 0.0, places=2)
 
 
+def de_app(*nombres) -> dict:
+    """Funciones y constantes de app.py, sacadas sin correr la app.
+
+    app.py es un script de Streamlit: importarlo la arranca. Se toman de su
+    codigo las definiciones con esos nombres y se ejecutan aparte, con pandas a
+    la mano.
+    """
+    import ast
+    import pandas as pd
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
+              encoding="utf-8") as h:
+        src = h.read()
+
+    def nombre(nodo):
+        if isinstance(nodo, ast.FunctionDef):
+            return nodo.name
+        if isinstance(nodo, ast.Assign) and len(nodo.targets) == 1 \
+                and isinstance(nodo.targets[0], ast.Name):
+            return nodo.targets[0].id
+        return None
+
+    codigo = "\n".join(ast.get_source_segment(src, n) for n in ast.parse(src).body
+                       if nombre(n) in nombres)
+    ns = {"pd": pd}
+    exec(codigo, ns)
+    faltan = [n for n in nombres if n not in ns]
+    if faltan:
+        raise AssertionError(f"app.py ya no define {faltan}")
+    return ns
+
+
+def montos(marco) -> list:
+    """Los renglones de un DataFrame como tuplas, con None donde hay NaN."""
+    return [tuple(None if isinstance(v, float) and v != v else v for v in fila)
+            for fila in marco.itertuples(index=False)]
+
+
 class TestMarcaDeEfectivo(unittest.TestCase):
     """El rojo va SOLO en efectivo distinto de cero. Se prueba la funcion real,
     sacada de app.py sin correr la app."""
 
     def test_solo_marca_lo_que_trae_dinero(self):
-        import ast
         import pandas as pd
-        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py"),
-                   encoding="utf-8").read()
-        arbol = ast.parse(src)
-        codigo = "\n".join(ast.get_source_segment(src, n) for n in arbol.body
-                           if isinstance(n, ast.FunctionDef)
-                           and n.name in ("_numero", "_marcar_efectivo"))
-        ns = {}
-        exec(codigo, ns)
+        ns = de_app("_numero", "_marcar_efectivo")
         df = pd.DataFrame({"Tips efectivo": [45.0, 0.0, None]})
         estilo = df.style.map(ns["_marcar_efectivo"], subset=["Tips efectivo"])
         estilo._compute()
         marcadas = {fila for (fila, _), css in estilo.ctx.items() if css}
         self.assertEqual(marcadas, {0}, "solo el renglon con $45 debe ir en rojo")
+
+
+class TestResultadoDeOtraVersion(unittest.TestCase):
+    """Un resultado guardado en la sesion solo se muestra si lo armo este codigo.
+
+    La sesion sobrevive a una actualizacion de la app. Sin esto, el resultado de
+    antes se seguia mostrando con sus descargas debajo de las reglas nuevas: con
+    la gratuity de Bonita, un CSV que la traia en una pantalla que dice que va
+    vacia.
+    """
+
+    def setUp(self):
+        self.motivo = de_app("motivo_para_volver_a_generar")["motivo_para_volver_a_generar"]
+        self.huella = (date(2026, 9, 5), date(2026, 9, 18), ())
+
+    def test_el_de_esta_version_y_estas_entradas_se_muestra(self):
+        self.assertEqual(self.motivo({"version": "v2"}, self.huella, self.huella, "v2"), "")
+
+    def test_el_de_otra_version_no_aunque_las_entradas_sean_las_mismas(self):
+        motivo = self.motivo({"version": "v1"}, self.huella, self.huella, "v2")
+        self.assertIn("se actualizo", motivo)
+        self.assertIn("Generar", motivo)
+
+    def test_el_de_antes_de_que_hubiera_version_tampoco(self):
+        self.assertIn("se actualizo", self.motivo({}, self.huella, self.huella, "v2"))
+
+    def test_otras_entradas_piden_generar_otra_vez(self):
+        otra = (date(2026, 9, 19), date(2026, 10, 2), ())
+        self.assertIn("Cambiaste el periodo",
+                      self.motivo({"version": "v2"}, self.huella, otra, "v2"))
 
 
 
@@ -1864,12 +1959,15 @@ class TestPrimaPorViolacion(unittest.TestCase):
 
 
 class TestTipsAManoEnBonita(unittest.TestCase):
-    """En Plaza Bonita los tips no van en el archivo: los captura Tany a mano.
+    """En Plaza Bonita ni los tips ni la gratuity van en el archivo: los captura
+    Tany a mano.
 
-    Pedido el 2026-11-09. Paycheck tips y Cash tips van VACIOS, no en 0: un cero
-    sobrescribe, y volver a importar el archivo le borraria a todos lo que ella
-    ya capturo. La gratuity si va. Y lo que no va al archivo no puede salirse
-    del cuadre ni dejar de verse: un archivo sin tips parece completo.
+    Pedido el 2026-11-09, primero los tips y el mismo dia la gratuity: Tany
+    captura el total ('Tips and gratuity after pooling'), y con la gratuity en
+    el archivo esa parte se pagaba dos veces. Las columnas van VACIAS, no en 0:
+    un cero sobrescribe, y volver a importar el archivo le borraria a todos lo
+    que ella ya capturo. Y lo que no va al archivo no puede salirse del cuadre
+    ni dejar de verse: un archivo sin tips parece completo.
     """
 
     INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
@@ -1893,7 +1991,7 @@ class TestTipsAManoEnBonita(unittest.TestCase):
             self.BONITA: [self._fila("Ana Ejemplo", "Server", 100.00, 20.00, 30.00),
                           self._fila("Ana Ejemplo", "bartender", 55.50),
                           self._fila("Beto Ejemplo", "Taquero", 40.00)],
-            self.GASLAMP: [self._fila("Elsa Prueba", "Taquero", 80.00)]})
+            self.GASLAMP: [self._fila("Elsa Prueba", "Taquero", 80.00, gratuity=12.00)]})
 
     @staticmethod
     def _fila(nombre, job, cheque, efectivo=0.0, gratuity=0.0):
@@ -1905,51 +2003,103 @@ class TestTipsAManoEnBonita(unittest.TestCase):
         return next(f for f in self.r["by_company"][company]
                     if f["gusto_employee_id"] == gusto_id and f["title"] == titulo)
 
-    def test_bonita_sale_sin_tips_y_con_la_gratuity(self):
+    def test_bonita_sale_sin_tips_ni_gratuity(self):
         for fila in self.r["by_company"][self.BONITA]:
             with self.subTest(quien=fila["first_name"], puesto=fila["title"]):
                 self.assertEqual(fila["paycheck_tips"], "",
                                  "vacio y no 0: un cero borra lo que Tany capturo")
                 self.assertEqual(fila["cash_tips"], "")
+                self.assertEqual(fila["custom_earning_distributed_service_charges"], "",
+                                 "Tany captura el total: con la gratuity tambien "
+                                 "en el archivo, se paga dos veces")
         server = self._renglon(self.BONITA, "n00001", "Server (Primary)")
-        self.assertEqual(server["custom_earning_distributed_service_charges"], "30.00",
-                         "la gratuity sigue yendo en el archivo")
         self.assertEqual(server["regular_hours"], "8.00")
 
     def test_gaslamp_sigue_igual(self):
         elsa = self._renglon(self.GASLAMP, "g00001", "Taquero (Primary)")
         self.assertEqual(elsa["paycheck_tips"], "80.00")
+        self.assertEqual(elsa["custom_earning_distributed_service_charges"], "12.00",
+                         "fuera de Bonita la gratuity sigue yendo en el archivo")
 
     def test_la_lista_dice_quien_en_que_puesto_y_cuanto(self):
         """Con el nombre y el title de Gusto, que es lo que ve quien captura."""
         self.assertEqual(
-            [(t["nombre"], t["puesto"], t["cheque"], t["efectivo"])
+            [(t["nombre"], t["puesto"], t["cheque"], t["efectivo"], t["gratuity"])
              for t in self.r["tips_a_mano_por_renglon"]],
-            [("Ejemplo, Ana", "Server (Primary)", 100.00, 20.00),
-             ("Ejemplo, Ana", "bartender", 55.50, 0.0),
-             ("Ejemplo, Beto", "Taquero (Primary)", 40.00, 0.0)])
+            [("Ejemplo, Ana", "Server (Primary)", 100.00, 20.00, 30.00),
+             ("Ejemplo, Ana", "bartender", 55.50, 0.0, 0.0),
+             ("Ejemplo, Beto", "Taquero (Primary)", 40.00, 0.0, 0.0)])
 
     def test_lo_que_va_a_mano_cierra_el_cuadre(self):
         r = self.r
-        self.assertAlmostEqual(r["tips_reported"], 325.50, places=2)
-        self.assertAlmostEqual(r["tips_a_mano"], 215.50, places=2)
-        self.assertAlmostEqual(r["tips_placed"], 110.00, places=2,
-                               msg="al CSV solo van la gratuity de Bonita y los "
-                                   "tips de Gaslamp")
+        self.assertAlmostEqual(r["tips_reported"], 337.50, places=2)
+        self.assertAlmostEqual(r["tips_a_mano"], 245.50, places=2,
+                               msg="los tips y la gratuity de Bonita")
+        self.assertAlmostEqual(r["tips_placed"], 92.00, places=2,
+                               msg="al CSV solo van los tips y la gratuity de Gaslamp")
         self.assertEqual([a for a in r["avisos"] if a["tipo"] == "cuadre_tips"], [])
         self.assertEqual(r["problems"], [])
 
-    def test_avisa_que_hay_que_capturarlos_sin_la_gratuity(self):
+    def test_avisa_el_total_que_se_captura(self):
         avisos = [a for a in self.r["avisos"] if a["tipo"] == "tips_a_mano"]
         self.assertEqual(len(avisos), 1, "un aviso por empresa")
         aviso = avisos[0]
         self.assertEqual((aviso["nivel"], aviso["grupo"], aviso["company"]),
                          ("accion", "a_mano", self.BONITA))
-        self.assertIn("$195.50 en Paycheck tips", aviso["texto"])
-        self.assertIn("$20.00 en Cash tips", aviso["texto"])
-        self.assertIn("se paga doble", aviso["texto"],
-                      "Tany capturaba tips y gratuity juntos; la gratuity ya va "
-                      "en el archivo")
+        self.assertEqual((aviso["cheque"], aviso["efectivo"], aviso["gratuity"]),
+                         (195.50, 20.00, 30.00))
+        # El total primero: es el numero que Tany captura. Y el desglose en el
+        # texto, que es lo que la pantalla muestra; los campos no los lee.
+        self.assertIn("$245.50 en 3 renglon(es)", aviso["texto"])
+        self.assertIn("'Tips and gratuity after pooling'", aviso["texto"])
+        self.assertIn("$195.50 son tips al cheque", aviso["texto"])
+        self.assertIn("$20.00 tips en efectivo", aviso["texto"])
+        self.assertIn("$30.00 gratuity", aviso["texto"])
+
+    def test_la_lista_en_pantalla_trae_cada_monto_en_su_columna(self):
+        """La tabla de 'Antes de subir', armada por la funcion real de app.py.
+
+        Cada columna de tips lleva el nombre del campo de Gusto donde va, y la
+        ultima es el numero que copia Tany: una columna cruzada o un total sin
+        la gratuity es un cheque equivocado. Vacio, y no $0.00, donde no hay nada.
+        """
+        marco = de_app("NOMBRE_EMPRESA", "_DINERO_A_MANO", "marco_a_mano")[
+            "marco_a_mano"](self.r["tips_a_mano_por_renglon"])
+        self.assertEqual(list(marco.columns),
+                         ["Empresa", "Empleado", "Puesto", "Paycheck tips", "Cash tips",
+                          "Gratuity", "Tips and gratuity"])
+        self.assertEqual(montos(marco), [
+            ("Plaza Bonita", "Ejemplo, Ana", "Server (Primary)", 100.00, 20.00, 30.00, 150.00),
+            ("Plaza Bonita", "Ejemplo, Ana", "bartender", 55.50, None, None, 55.50),
+            ("Plaza Bonita", "Ejemplo, Beto", "Taquero (Primary)", 40.00, None, None, 40.00)])
+        self.assertAlmostEqual(marco["Tips and gratuity"].sum(), self.r["tips_a_mano"],
+                               places=2)
+
+    def test_el_resultado_dice_con_que_version_se_armo(self):
+        """La pantalla no muestra un resultado de otra version del codigo."""
+        self.assertTrue(gusto_export.VERSION_DEL_RESULTADO)
+        self.assertEqual(self.r["version"], gusto_export.VERSION_DEL_RESULTADO)
+
+    def test_quien_solo_trae_gratuity_tambien_sale_en_la_lista(self):
+        """El archivo ya no la lleva: si no saliera en la lista, nadie la
+        capturaria."""
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        caro = esc.empleado("National City", "Ejemplo", "Caro", gusto_id="n00003",
+                            job="Server")
+        esc.turno(caro, "2026-09-07", horas=5.0, job="Server")
+        r = esc.correr(self.INICIO, self.FIN, companias={self.BONITA}, tip_reports={
+            self.BONITA: [self._fila("Caro Ejemplo", "Server", 0.0, gratuity=25.00)]})
+        self.assertEqual(
+            [(t["nombre"], t["cheque"], t["efectivo"], t["gratuity"])
+             for t in r["tips_a_mano_por_renglon"]],
+            [("Ejemplo, Caro", 0.0, 0.0, 25.00)])
+        self.assertAlmostEqual(r["tips_a_mano"], 25.00, places=2)
+        self.assertEqual(r["problems"], [])
+        marco = de_app("NOMBRE_EMPRESA", "_DINERO_A_MANO", "marco_a_mano")[
+            "marco_a_mano"](r["tips_a_mano_por_renglon"])
+        self.assertEqual(montos(marco), [
+            ("Plaza Bonita", "Ejemplo, Caro", "Server (Primary)", None, None, 25.00, 25.00)])
 
     def test_nadie_sale_sin_tips_del_pool_por_capturarse_a_mano(self):
         """Ese aviso lee el reporte, no el archivo: Beto solo tiene tips al
@@ -1959,9 +2109,10 @@ class TestTipsAManoEnBonita(unittest.TestCase):
 
     def test_el_diagnostico_lo_dice(self):
         texto = gusto_export.formatear_diagnostico(self.r, self.INICIO, self.FIN)
-        self.assertIn("tips a mano, no al CSV      tacos-franc-bonita-llc", texto)
-        self.assertRegex(texto, r"a mano\s+215\.50\s+SIN EXPLICAR\s+\+0\.00")
-        self.assertIn("(van vacios: se capturan a mano)", texto)
+        self.assertIn("tips y gratuity a mano      tacos-franc-bonita-llc", texto)
+        self.assertRegex(texto, r"a mano\s+245\.50\s+SIN EXPLICAR\s+\+0\.00")
+        self.assertEqual(texto.count("(van vacios: se capturan a mano)"), 2,
+                         "en los tips y en los service charges de Bonita")
 
 
 if __name__ == "__main__":
