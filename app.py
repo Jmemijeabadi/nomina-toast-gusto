@@ -45,10 +45,10 @@ NOMBRE_EMPRESA = {
 
 # En que orden se muestran los grupos de "Antes de subir": primero lo que mueve
 # dinero de alguien, al final la configuracion.
-ORDEN_DE_GRUPOS = ("cuadre", "alta_en_gusto", "identidad", "tips", "jobs",
+ORDEN_DE_GRUPOS = ("cuadre", "a_mano", "alta_en_gusto", "identidad", "tips", "jobs",
                    "turnos", "descansos", "sucursal", "config")
 ICONO_GRUPO = {
-    "cuadre": "🧮", "alta_en_gusto": "👤", "identidad": "🔗", "tips": "💵",
+    "cuadre": "🧮", "a_mano": "✍️", "alta_en_gusto": "👤", "identidad": "🔗", "tips": "💵",
     "jobs": "🏷️", "turnos": "⏱️", "descansos": "🍽️", "sucursal": "🏪",
     "config": "⚙️",
 }
@@ -582,7 +582,11 @@ if resultado and vigente:
     # Tercer bucket: tips que el pool dejo en cuentas que no son personas. Si no
     # se resta, la pantalla reporta un hueco que no existe y asusta de gratis.
     tips_sin_dueno = sum(resultado.get("tips_no_persona", {}).values())
-    hueco_tips = tips_rep - tips_csv - tips_ret - tips_sin_dueno
+    # Cuarto: los tips de las empresas donde se capturan a mano (TIPS_A_MANO).
+    # No van al archivo, pero tampoco faltan.
+    tips_a_mano = resultado.get("tips_a_mano", 0.0)
+    a_mano = resultado.get("tips_a_mano_por_renglon") or []
+    hueco_tips = tips_rep - tips_csv - tips_ret - tips_sin_dueno - tips_a_mano
     horas_ent = resultado.get("hours_reported", 0.0)
     horas_csv = resultado.get("hours_placed", 0.0)
     horas_ret = resultado.get("hours_held", 0.0)
@@ -679,7 +683,10 @@ if resultado and vigente:
             tips = suma("paycheck_tips") + suma("cash_tips")
             cargos = suma("custom_earning_distributed_service_charges")
             prima = suma("missed_break_hours")
-            resumen = f"{personas} personas · {horas:,.2f} h · {money(tips)} en tips"
+            # "$0.00 en tips" se leeria como que nadie tuvo tips.
+            de_tips = ("tips a mano" if company in gusto_export.TIPS_A_MANO
+                       else f"{money(tips)} en tips")
+            resumen = f"{personas} personas · {horas:,.2f} h · {de_tips}"
             if cargos > 0.005:
                 resumen += f" · {money(cargos)} en service charges"
             if prima > 0.005:
@@ -737,6 +744,29 @@ if resultado and vigente:
                     st.dataframe(tabla, hide_index=True, width="stretch")
                 continue
 
+            if grupo == "a_mano":
+                with st.expander(f"{icono}  {titulo} — {len(a_mano)} renglones · "
+                                 f"{money(tips_a_mano)}"):
+                    for a in items:
+                        st.markdown(f"- {a['texto']}")
+                    st.caption("Capturalos despues de importar el archivo. En el "
+                               "archivo esas columnas van vacias, asi que volver a "
+                               "importarlo no borra lo que captures. Los montos son "
+                               "los del reporte de tips, con el nombre y el puesto "
+                               "como estan en Gusto.")
+                    marco = pd.DataFrame([{
+                        "Empresa": NOMBRE_EMPRESA.get(t["company"], t["company"]),
+                        "Empleado": t["nombre"],
+                        "Puesto": t["puesto"],
+                        "Paycheck tips": t["cheque"] or None,
+                        "Cash tips": t["efectivo"] or None,
+                    } for t in sorted(a_mano, key=lambda t: (
+                        t["company"], t["nombre"], "(Primary)" not in t["puesto"]))])
+                    st.dataframe(marco.style.format(
+                        "${:,.2f}", subset=["Paycheck tips", "Cash tips"], na_rep=""),
+                        hide_index=True, width="stretch")
+                continue
+
             with st.expander(f"{icono}  {titulo} — {len(items)}"):
                 for a in items:
                     st.markdown(f"- {a['texto']}")
@@ -773,6 +803,11 @@ if resultado and vigente:
         pestanas = st.tabs([NOMBRE_EMPRESA.get(c, c) for c in filas_por_empresa])
         for pestana, (company, filas) in zip(pestanas, filas_por_empresa.items()):
             with pestana:
+                if company in gusto_export.TIPS_A_MANO:
+                    st.caption("En esta empresa los tips no van en el archivo: "
+                               "Tips cheque y Tips efectivo salen vacios y se "
+                               "capturan a mano en Gusto. La lista esta en "
+                               "**Antes de subir**.")
                 con_dato = [f for f in filas
                             if any((f[c] or "") for c in COLUMNAS_CON_DATO)]
                 vacios = len(filas) - len(con_dato)
@@ -810,18 +845,19 @@ if resultado and vigente:
     st.markdown("#### Detalle")
 
     with st.expander("Como cuadran las cuentas"):
-        st.caption("Todo lo que entra tiene que salir: al CSV, a retenidos, o a "
-                   "una cuenta que no es persona. 'Sin explicar' debe ser cero.")
+        st.caption("Todo lo que entra tiene que salir: al CSV, a retenidos, a lo "
+                   "que se captura a mano, o a una cuenta que no es persona. "
+                   "'Sin explicar' debe ser cero.")
         st.dataframe(pd.DataFrame([
             {"": "Horas", "Entro": f"{horas_ent:,.2f}", "Al CSV": f"{horas_csv:,.2f}",
-             "Retenido": f"{horas_ret:,.2f}", "Sin dueño": "",
+             "Retenido": f"{horas_ret:,.2f}", "A mano": "", "Sin dueño": "",
              "Sin explicar": f"{hueco_horas:,.2f}"},
             {"": "Tips y service charges", "Entro": money(tips_rep), "Al CSV": money(tips_csv),
-             "Retenido": money(tips_ret), "Sin dueño": money(tips_sin_dueno),
-             "Sin explicar": money(hueco_tips)},
+             "Retenido": money(tips_ret), "A mano": money(tips_a_mano),
+             "Sin dueño": money(tips_sin_dueno), "Sin explicar": money(hueco_tips)},
             {"": "Break premium hrs", "Entro": f"{prima_ent:,.2f}",
              "Al CSV": f"{prima_csv:,.2f}", "Retenido": f"{prima_ret:,.2f}",
-             "Sin dueño": "", "Sin explicar": f"{hueco_prima:,.2f}"},
+             "A mano": "", "Sin dueño": "", "Sin explicar": f"{hueco_prima:,.2f}"},
         ]), hide_index=True, width="stretch")
 
     if informativos:

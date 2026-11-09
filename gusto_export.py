@@ -26,6 +26,9 @@ Fuentes de cada columna:
       pooling". El nonCashTips de la API es PRE-pool y no sirve: en Gaslamp
       27 de 31 personas cobran algo distinto de lo que registraron, y en
       National City 32 personas de cocina cobran con cero en la API.
+      En las empresas de TIPS_A_MANO (hoy Plaza Bonita) paycheck_tips y
+      cash_tips van vacias: esos tips los captura Tany a mano en Gusto. La
+      gratuity si va.
 
 Reglas duras:
   - Una columna sin dato calculado va VACIA, nunca "0.0". En Smart Import los
@@ -107,6 +110,7 @@ GRUPOS_DE_AVISO = {
     "confirmar_identidad":             "identidad",
     "retenido_homonimo":               "identidad",
     "persona_en_empresa_sin_procesar": "identidad",
+    "tips_a_mano":                     "a_mano",
     "tips_sin_dueno":                  "tips",
     "tips_sin_ubicar":                 "tips",
     "sin_tips_del_pool":               "tips",
@@ -127,6 +131,7 @@ GRUPOS_DE_AVISO = {
 
 TITULOS_DE_GRUPO = {
     "cuadre":        "El cuadre no cierra",
+    "a_mano":        "Tips que se capturan a mano en Gusto",
     "alta_en_gusto": "Gente que no entra al CSV",
     "identidad":     "Identidades por confirmar",
     "tips":          "Tips que no llegan a nadie",
@@ -151,7 +156,8 @@ NON_CASH_TIPS_COLUMN = "paycheck_tips"
 # inconsistentes ('Server', 'Host', 'bartender').
 #
 # Esto NO mueve dinero. El reporte de tips sigue siendo la fuente y lo que diga
-# va al CSV tal cual; esta regla solo sirve para AVISAR cuando el efectivo cae
+# va al CSV tal cual (o a la lista de lo que se captura a mano, en las empresas
+# de TIPS_A_MANO); esta regla solo sirve para AVISAR cuando el efectivo cae
 # en un puesto donde no se espera, que casi siempre significa que hay que
 # mirar la politica en Tips Manager o el reporte. Medido en dos periodos: en
 # Bonita solo Server trae efectivo ($79.55 y $73.00) y en Gaslamp nadie.
@@ -159,6 +165,19 @@ PUESTOS_CON_EFECTIVO = {
     "tacos-franc-bonita-llc": {"server", "bartender", "host"},
     "tacos-franc-gaslamp-llc": set(),
 }
+
+# Empresas cuyos tips (Paycheck tips y Cash tips) NO van en el archivo: Tany los
+# captura a mano en Gusto. Pedido el 2026-11-09 para Plaza Bonita; la gratuity
+# (custom_earning_distributed_service_charges) sigue saliendo del reporte.
+#
+# Las dos columnas van VACIAS, no en 0. Un cero sobrescribe: si el archivo se
+# vuelve a importar despues de que ella capturo, le borra los tips a todos. Un
+# blanco no toca nada.
+#
+# Lo que no va al archivo no se pierde: entra al cuadre como "a mano", y la
+# pantalla lo lista por persona y puesto, con los nombres de Gusto, para
+# capturarlo.
+TIPS_A_MANO = {"tacos-franc-bonita-llc"}
 
 # La prima de meal nunca se escribe como monto: ver el docstring.
 MEAL_PREMIUM_COLUMN = "missed_break_hours"
@@ -390,6 +409,8 @@ def build(client: ToastClient, start: date, end_inclusive: date,
     Lo que NO se hace es generar el archivo de una empresa sin su reporte: saldria
     con las columnas de tips vacias, y si alguien lo sube a Gusto pensando que
     esta completo, esa gente cobra sin sus tips esa quincena y nadie se entera.
+    En las de TIPS_A_MANO esas columnas van vacias a proposito, pero el reporte
+    se sigue pidiendo: de ahi salen la gratuity y la lista de lo que se captura.
     """
     todas_las_locations = resolve_locations(client)
     # Las sucursales SIN empresa de Gusto se revisan siempre: el aviso de que
@@ -1056,15 +1077,21 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                        + ", ".join(sorted(esperados)))
         else:
             detalle = "en esa empresa no se reparte efectivo a ningun puesto"
+        if company in TIPS_A_MANO:
+            que_pasa = ("Esos tips se capturan a mano, asi que el monto no va en "
+                        "el archivo; antes de capturarlo conviene revisar")
+        else:
+            que_pasa = ("El monto va al CSV tal como lo trae el reporte; lo que "
+                        "conviene revisar es")
         avisar("accion", "efectivo_en_puesto_inesperado",
             f"{quien} tiene ${efectivo:,.2f} de tips en EFECTIVO en el puesto "
-            f"'{titulo}', y {detalle}. El monto va al CSV tal como lo trae el "
-            f"reporte; lo que conviene revisar es la politica en Tips Manager o "
+            f"'{titulo}', y {detalle}. {que_pasa} la politica en Tips Manager o "
             f"si el reporte esta bien.",
             company=company, titulo=titulo, monto=round(efectivo, 2))
 
     # Paso 6: llenar el template de cada empresa.
     output = {}
+    tips_a_mano_por_renglon = []
     for location in locations:
         if not location["configured"]:
             continue
@@ -1101,10 +1128,26 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 record["overtime_hours"] = blank_or(cell.get("overtime", 0.0))
                 record["double_overtime_hours"] = blank_or(cell.get("double", 0.0))
 
-                # Los tips se pagan por job: el reporte ya los trae asi.
-                record[NON_CASH_TIPS_COLUMN] = blank_or(tip.get("non_cash", 0.0))
-                if NON_CASH_TIPS_COLUMN != "cash_tips":
-                    record["cash_tips"] = blank_or(tip.get("cash", 0.0))
+                # Los tips se pagan por job: el reporte ya los trae asi. En las
+                # empresas de TIPS_A_MANO no se escriben: van a la lista de lo
+                # que se captura a mano, con el nombre y el title de Gusto.
+                if company in TIPS_A_MANO:
+                    cheque = tip.get("non_cash", 0.0)
+                    efectivo = tip.get("cash", 0.0)
+                    if abs(cheque) > 0.005 or abs(efectivo) > 0.005:
+                        tips_a_mano_por_renglon.append({
+                            "company": company,
+                            "gusto_employee_id": employee_id,
+                            "nombre": f"{template_row['last_name']}, "
+                                      f"{template_row['first_name']}",
+                            "puesto": title,
+                            "cheque": round(cheque, 2),
+                            "efectivo": round(efectivo, 2),
+                        })
+                else:
+                    record[NON_CASH_TIPS_COLUMN] = blank_or(tip.get("non_cash", 0.0))
+                    if NON_CASH_TIPS_COLUMN != "cash_tips":
+                        record["cash_tips"] = blank_or(tip.get("cash", 0.0))
                 record["custom_earning_distributed_service_charges"] = \
                     blank_or(tip.get("gratuity", 0.0))
 
@@ -1115,6 +1158,22 @@ def build(client: ToastClient, start: date, end_inclusive: date,
                 rows.append(record)
 
         output[company] = rows
+
+        # Un archivo sin tips se ve completo. Sin este aviso, subido a Gusto,
+        # esa gente cobraria la quincena sin sus tips y nadie se enteraria.
+        suyos = [t for t in tips_a_mano_por_renglon if t["company"] == company]
+        if suyos:
+            cheque = sum(t["cheque"] for t in suyos)
+            efectivo = sum(t["efectivo"] for t in suyos)
+            avisar("accion", "tips_a_mano",
+                f"{location['short']}: los tips no van en el archivo; se capturan "
+                f"a mano en Gusto despues de importarlo: ${cheque:,.2f} en "
+                f"Paycheck tips y ${efectivo:,.2f} en Cash tips, en "
+                f"{len(suyos)} renglon(es). La gratuity si va en el archivo, en "
+                f"Distributed service charges: captura solo los tips y no el "
+                f"'Tips and gratuity after pooling' del reporte, o la gratuity "
+                f"se paga doble.",
+                company=company, cheque=round(cheque, 2), efectivo=round(efectivo, 2))
 
     # La prima que NO llega a ningun renglon. Antes se calculaba y se tiraba en
     # silencio: a quien no tiene alta en Gusto, o cuyo id no esta en el
@@ -1356,7 +1415,13 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             continue
         hours_reported += row["payable_hours"]
 
-    placed = sum(c["cash"] + c["non_cash"] + c["gratuity"] for c in tips_by_cell.values())
+    # Al CSV va solo lo que se escribe: en las empresas de TIPS_A_MANO, la
+    # gratuity. Sus tips son otro bucket del cierre, el de lo que se captura a
+    # mano, y se cuentan de la lista que ve quien captura.
+    placed = sum(c["gratuity"] + (0.0 if comp in TIPS_A_MANO
+                                  else c["cash"] + c["non_cash"])
+                 for (comp, _pago, _titulo), c in tips_by_cell.items())
+    tips_a_mano = sum(t["cheque"] + t["efectivo"] for t in tips_a_mano_por_renglon)
     for quien, monto in sorted(tips_no_persona.items(), key=lambda x: -x[1]):
         held_back.append({
             "nombre": quien, "horas": 0.0, "tips": round(monto, 2), "prima": 0.0,
@@ -1369,12 +1434,14 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             f"persona, asi que no llegan a nadie. Decidir en Tips Manager a quien "
             f"corresponden; en California los tips son propiedad de los empleados.")
 
-    gap = tips_reported_total - placed - sum(tips_held.values()) - sum(tips_no_persona.values())
+    gap = (tips_reported_total - placed - tips_a_mano
+           - sum(tips_held.values()) - sum(tips_no_persona.values()))
     if abs(gap) > TOLERANCIA_TIPS:
         avisar("bloquea", "cuadre_tips",
             f"Cierre de tips: el reporte trae ${tips_reported_total:,.2f}, se "
-            f"ubicaron ${placed:,.2f} y ${sum(tips_held.values()):,.2f} quedaron "
-            f"retenidos. Faltan ${gap:,.2f} sin explicar; no subir hasta cuadrarlo.")
+            f"ubicaron ${placed:,.2f} en el CSV, ${tips_a_mano:,.2f} van a mano y "
+            f"${sum(tips_held.values()):,.2f} quedaron retenidos. Faltan "
+            f"${gap:,.2f} sin explicar; no subir hasta cuadrarlo.")
 
     # Se mide de los RENGLONES QUE SE ESCRIBEN, no del diccionario de celdas.
     # Medirlo de las celdas permitia que una celda sobreviviera sin tener
@@ -1509,6 +1576,7 @@ def build(client: ToastClient, start: date, end_inclusive: date,
         "columna_de_tips": NON_CASH_TIPS_COLUMN,
         "columna_de_prima": MEAL_PREMIUM_COLUMN,
         "columna_de_gratuity": "custom_earning_distributed_service_charges",
+        "tips_a_mano_en": sorted(TIPS_A_MANO),
         "tolerancia_horas": TOLERANCIA_HORAS,
         "tolerancia_tips": TOLERANCIA_TIPS,
         "reportes_de_tips_recibidos": {
@@ -1528,6 +1596,10 @@ def build(client: ToastClient, start: date, end_inclusive: date,
             "premium_held": round(premium_held, 2),
             "tips_reported": round(tips_reported_total, 2),
             "tips_placed": round(placed, 2), "tips_held": tips_held,
+            # Los tips que no van al archivo porque se capturan a mano en Gusto
+            # (TIPS_A_MANO), uno por renglon del template y con sus nombres.
+            "tips_a_mano": round(tips_a_mano, 2),
+            "tips_a_mano_por_renglon": tips_a_mano_por_renglon,
             # Tips que el pool dejo en una cuenta que no es una persona. Es un
             # tercer bucket, no cero: sin exponerlo, quien reconcilia ve un
             # hueco fantasma del tamano de esas cuentas.
@@ -1568,6 +1640,7 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     w(f"  tips no-efectivo a la columna '{d.get('columna_de_tips')}'")
     w(f"  prima a la columna          '{d.get('columna_de_prima')}' (en Gusto: Break premium hours)")
     w(f"  gratuity a la columna       '{d.get('columna_de_gratuity')}' (Distributed service charges)")
+    w(f"  tips a mano, no al CSV      {', '.join(d.get('tips_a_mano_en') or []) or 'ninguna empresa'}")
     w("  custom_earning_meal_break_violation va siempre vacia (la prima va en horas)")
     w(f"  tolerancia del cuadre       {d.get('tolerancia_horas')} h / "
       f"${d.get('tolerancia_tips')}")
@@ -1604,11 +1677,12 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
     tr, tc = resultado.get("tips_reported", 0.0), resultado.get("tips_placed", 0.0)
     th = sum((resultado.get("tips_held") or {}).values())
     tn = sum((resultado.get("tips_no_persona") or {}).values())
+    tm = resultado.get("tips_a_mano", 0.0)
     w(f"  horas  entro {hr:>10,.2f}  al CSV {hc:>10,.2f}  retenido {hh:>9,.2f}"
       f"  SIN EXPLICAR {hr - hc - hh:>+9,.2f}")
     w(f"  tips   entro {tr:>10,.2f}  al CSV {tc:>10,.2f}  retenido {th:>9,.2f}"
-      f"  sin dueno {tn:>8,.2f}  SIN EXPLICAR {tr - tc - th - tn:>+9,.2f}"
-      f"   (tips + service charges)")
+      f"  sin dueno {tn:>8,.2f}  a mano {tm:>9,.2f}"
+      f"  SIN EXPLICAR {tr - tc - th - tn - tm:>+9,.2f}   (tips + service charges)")
     pr, pc, ph = (resultado.get("premium_reported", 0.0),
                   resultado.get("premium_placed", 0.0),
                   resultado.get("premium_held", 0.0))
@@ -1633,7 +1707,8 @@ def formatear_diagnostico(resultado: dict, start: date, end_inclusive: date) -> 
           f"DT {suma('double_overtime_hours'):>7,.2f}")
         w(f"     break premium (meal) {suma('missed_break_hours'):>7,.2f} h")
         w(f"     tips: paycheck {suma(NON_CASH_TIPS_COLUMN):>10,.2f}  "
-          f"efectivo {suma('cash_tips'):>8,.2f}")
+          f"efectivo {suma('cash_tips'):>8,.2f}"
+          + ("   (van vacios: se capturan a mano)" if company in TIPS_A_MANO else ""))
         w(f"     service charges (gratuity) "
           f"{suma('custom_earning_distributed_service_charges'):>9,.2f}")
         # El dinero en renglones de puesto NO primario es la pregunta abierta
@@ -1755,8 +1830,11 @@ def main() -> int:
         print(f"    regular {suma('regular_hours'):,.2f} h | "
               f"OT {suma('overtime_hours'):,.2f} h | "
               f"DT {suma('double_overtime_hours'):,.2f} h")
+        tips_del_archivo = (
+            "tips a mano" if company in TIPS_A_MANO
+            else f"tips ${suma('paycheck_tips') + suma('cash_tips'):,.2f}")
         print(f"    break premium (meal) {suma('missed_break_hours'):,.2f} h | "
-              f"tips ${suma('paycheck_tips') + suma('cash_tips'):,.2f} | "
+              f"{tips_del_archivo} | "
               f"service charges ${suma('custom_earning_distributed_service_charges'):,.2f}")
 
     held = result.get("held_back") or []

@@ -1006,7 +1006,7 @@ class TestEfectivoPorPuesto(unittest.TestCase):
                          {"server", "bartender", "host"})
         self.assertEqual(regla["tacos-franc-gaslamp-llc"], set())
 
-    def test_avisa_si_el_efectivo_cae_en_un_taquero_de_bonita(self):
+    def _taquero_de_bonita_con_efectivo(self):
         quien = self.esc.empleado("National City", "Ejemplo", "Ignacio",
                                   gusto_id="t00001")
         for dia in ("2026-09-07", "2026-09-08", "2026-09-09"):
@@ -1021,13 +1021,30 @@ class TestEfectivoPorPuesto(unittest.TestCase):
                          "un Taquero de Bonita con efectivo tiene que avisar")
         self.assertIn("45.00", avisos[0]["texto"])
         self.assertIn("Taquero", avisos[0]["texto"])
+        return r, avisos[0]
 
-        # y el monto NO se mueve: va al CSV tal como lo trae el reporte
+    def test_avisa_si_el_efectivo_cae_en_un_taquero_de_bonita(self):
+        r, aviso = self._taquero_de_bonita_con_efectivo()
+        # y el monto NO se mueve: se queda en el Taquero, tal como lo trae el
+        # reporte. En Bonita va a la lista de lo que se captura a mano.
+        self.assertEqual(
+            [(t["puesto"], t["efectivo"]) for t in r["tips_a_mano_por_renglon"]],
+            [("Taquero (Primary)", 45.00)],
+            "la herramienta no debe reasignar el efectivo: el reporte es la fuente")
+        self.assertIn("se capturan a mano", aviso["texto"])
+
+    def test_donde_los_tips_van_al_archivo_el_efectivo_va_tal_cual(self):
+        """Si Bonita dejara de capturarlos a mano, el efectivo va al CSV sin moverse."""
+        self.addCleanup(setattr, gusto_export, "TIPS_A_MANO", gusto_export.TIPS_A_MANO)
+        gusto_export.TIPS_A_MANO = set()
+        r, aviso = self._taquero_de_bonita_con_efectivo()
         filas = r["by_company"]["tacos-franc-bonita-llc"]
         efectivo = sum(float(f["cash_tips"] or 0) for f in filas)
         self.assertAlmostEqual(efectivo, 45.00, places=2,
                                msg="la herramienta no debe reasignar el efectivo: "
                                    "el reporte es la fuente")
+        self.assertIn("va al CSV tal como lo trae el reporte", aviso["texto"])
+        self.assertEqual(r["tips_a_mano_por_renglon"], [])
 
     def test_no_avisa_si_el_efectivo_cae_en_un_server_de_bonita(self):
         quien = self.esc.empleado("National City", "Ejemplo", "Julia",
@@ -1172,7 +1189,8 @@ class TestLaPantallaDeResultados(unittest.TestCase):
     def _tablas(self, resultado):
         """Las tablas de la vista previa y de totales, tal como se pintaron."""
         marcos = self._marcos(self._app(resultado))
-        previas = [m for m in marcos if "Empleado" in m.columns]
+        # Con "Reg": la lista de tips a mano tambien tiene "Empleado".
+        previas = [m for m in marcos if "Empleado" in m.columns and "Reg" in m.columns]
         totales = [m for m in marcos if "" in m.columns and "Reg" in m.columns]
         return previas, totales
 
@@ -1326,6 +1344,27 @@ class TestLaPantallaDeResultados(unittest.TestCase):
         self.assertEqual(botones, ["⬇  Plaza Bonita"])
         avisos = " ".join(i.value for i in at.info)
         self.assertIn("Gaslamp", avisos, "no dijo que Gaslamp quedo sin generar")
+
+    def test_los_tips_a_mano_se_listan_antes_de_subir(self):
+        """El archivo de Bonita va sin tips y se ve completo: la lista con la
+        que se capturan tiene que estar en pantalla, y sumar lo mismo."""
+        self.assertGreater(self.base["tips_a_mano"], 0)
+        at = self._app(self.base)
+        etiquetas = [e.label for e in at.expander if "a mano" in (e.label or "")]
+        self.assertEqual(len(etiquetas), 1)
+        self.assertIn(f"${self.base['tips_a_mano']:,.2f}", etiquetas[0])
+        tabla = next(m for m in self._marcos(at) if "Paycheck tips" in m.columns)
+        self.assertEqual(len(tabla), len(self.base["tips_a_mano_por_renglon"]))
+        self.assertAlmostEqual(
+            tabla["Paycheck tips"].fillna(0).sum() + tabla["Cash tips"].fillna(0).sum(),
+            self.base["tips_a_mano"], places=2)
+
+    def test_el_cuadre_cuenta_lo_que_va_a_mano(self):
+        cuadre = next(m for m in self._marcos(self._app(self.base)) if "Entro" in m.columns)
+        fila = cuadre[cuadre[""] == "Tips y service charges"].iloc[0]
+        self.assertEqual(fila["A mano"], f"${self.base['tips_a_mano']:,.2f}")
+        hueco = float(fila["Sin explicar"].replace("$", "").replace(",", ""))
+        self.assertAlmostEqual(hueco, 0.0, places=2)
 
 
 class TestMarcaDeEfectivo(unittest.TestCase):
@@ -1489,7 +1528,8 @@ class TestUnaSolaSucursal(unittest.TestCase):
         self.assertAlmostEqual(r["hours_reported"], 24.0, places=2,
                                msg="el cuadre debe medir solo las horas de Bonita")
         self.assertAlmostEqual(toast_falso.hueco_de_horas(r), 0.0, places=2)
-        self.assertAlmostEqual(r["tips_placed"], 300.0, places=2)
+        # Los tips de Bonita se capturan a mano: no van al CSV, pero cuentan.
+        self.assertAlmostEqual(r["tips_placed"] + r["tips_a_mano"], 300.0, places=2)
         self.assertEqual(r["problems"], [])
 
     def test_esa_empresa_sale_igual_que_generando_las_dos(self):
@@ -1821,6 +1861,108 @@ class TestPrimaPorViolacion(unittest.TestCase):
         self.assertEqual(float(fila["missed_break_hours"] or 0), 2.0,
                          "un turno de 14 h sin descansos tiene dos violaciones y "
                          "se pagan dos horas")
+
+
+class TestTipsAManoEnBonita(unittest.TestCase):
+    """En Plaza Bonita los tips no van en el archivo: los captura Tany a mano.
+
+    Pedido el 2026-11-09. Paycheck tips y Cash tips van VACIOS, no en 0: un cero
+    sobrescribe, y volver a importar el archivo le borraria a todos lo que ella
+    ya capturo. La gratuity si va. Y lo que no va al archivo no puede salirse
+    del cuadre ni dejar de verse: un archivo sin tips parece completo.
+    """
+
+    INICIO, FIN = date(2026, 9, 5), date(2026, 9, 18)
+    BONITA, GASLAMP = "tacos-franc-bonita-llc", "tacos-franc-gaslamp-llc"
+
+    def setUp(self):
+        esc = toast_falso.Escenario()
+        self.addCleanup(esc.limpiar)
+        # Ana tiene dos puestos: los tips van por renglon, como en el reporte.
+        ana = esc.empleado("National City", "Ejemplo", "Ana", gusto_id="n00001",
+                           job="Server")
+        esc.renglon_de_gusto("National City", "Ejemplo", "Ana", "n00001",
+                             job="bartender")
+        beto = esc.empleado("National City", "Ejemplo", "Beto", gusto_id="n00002")
+        elsa = esc.empleado("Gaslamp Quarter", "Prueba", "Elsa", gusto_id="g00001")
+        esc.turno(ana, "2026-09-07", horas=8.0, job="Server", con_meal=True)
+        esc.turno(ana, "2026-09-08", horas=6.0, job="bartender")
+        esc.turno(beto, "2026-09-07", horas=6.0)
+        esc.turno(elsa, "2026-09-07", horas=6.0)
+        self.r = esc.correr(self.INICIO, self.FIN, tip_reports={
+            self.BONITA: [self._fila("Ana Ejemplo", "Server", 100.00, 20.00, 30.00),
+                          self._fila("Ana Ejemplo", "bartender", 55.50),
+                          self._fila("Beto Ejemplo", "Taquero", 40.00)],
+            self.GASLAMP: [self._fila("Elsa Prueba", "Taquero", 80.00)]})
+
+    @staticmethod
+    def _fila(nombre, job, cheque, efectivo=0.0, gratuity=0.0):
+        """Como lo deja load_tip_report, que normaliza el CSV del reporte."""
+        return {"employee": nombre, "job": job, "hours": 6.0,
+                "cash": efectivo, "non_cash": cheque, "gratuity": gratuity}
+
+    def _renglon(self, company, gusto_id, titulo):
+        return next(f for f in self.r["by_company"][company]
+                    if f["gusto_employee_id"] == gusto_id and f["title"] == titulo)
+
+    def test_bonita_sale_sin_tips_y_con_la_gratuity(self):
+        for fila in self.r["by_company"][self.BONITA]:
+            with self.subTest(quien=fila["first_name"], puesto=fila["title"]):
+                self.assertEqual(fila["paycheck_tips"], "",
+                                 "vacio y no 0: un cero borra lo que Tany capturo")
+                self.assertEqual(fila["cash_tips"], "")
+        server = self._renglon(self.BONITA, "n00001", "Server (Primary)")
+        self.assertEqual(server["custom_earning_distributed_service_charges"], "30.00",
+                         "la gratuity sigue yendo en el archivo")
+        self.assertEqual(server["regular_hours"], "8.00")
+
+    def test_gaslamp_sigue_igual(self):
+        elsa = self._renglon(self.GASLAMP, "g00001", "Taquero (Primary)")
+        self.assertEqual(elsa["paycheck_tips"], "80.00")
+
+    def test_la_lista_dice_quien_en_que_puesto_y_cuanto(self):
+        """Con el nombre y el title de Gusto, que es lo que ve quien captura."""
+        self.assertEqual(
+            [(t["nombre"], t["puesto"], t["cheque"], t["efectivo"])
+             for t in self.r["tips_a_mano_por_renglon"]],
+            [("Ejemplo, Ana", "Server (Primary)", 100.00, 20.00),
+             ("Ejemplo, Ana", "bartender", 55.50, 0.0),
+             ("Ejemplo, Beto", "Taquero (Primary)", 40.00, 0.0)])
+
+    def test_lo_que_va_a_mano_cierra_el_cuadre(self):
+        r = self.r
+        self.assertAlmostEqual(r["tips_reported"], 325.50, places=2)
+        self.assertAlmostEqual(r["tips_a_mano"], 215.50, places=2)
+        self.assertAlmostEqual(r["tips_placed"], 110.00, places=2,
+                               msg="al CSV solo van la gratuity de Bonita y los "
+                                   "tips de Gaslamp")
+        self.assertEqual([a for a in r["avisos"] if a["tipo"] == "cuadre_tips"], [])
+        self.assertEqual(r["problems"], [])
+
+    def test_avisa_que_hay_que_capturarlos_sin_la_gratuity(self):
+        avisos = [a for a in self.r["avisos"] if a["tipo"] == "tips_a_mano"]
+        self.assertEqual(len(avisos), 1, "un aviso por empresa")
+        aviso = avisos[0]
+        self.assertEqual((aviso["nivel"], aviso["grupo"], aviso["company"]),
+                         ("accion", "a_mano", self.BONITA))
+        self.assertIn("$195.50 en Paycheck tips", aviso["texto"])
+        self.assertIn("$20.00 en Cash tips", aviso["texto"])
+        self.assertIn("se paga doble", aviso["texto"],
+                      "Tany capturaba tips y gratuity juntos; la gratuity ya va "
+                      "en el archivo")
+
+    def test_nadie_sale_sin_tips_del_pool_por_capturarse_a_mano(self):
+        """Ese aviso lee el reporte, no el archivo: Beto solo tiene tips al
+        cheque, y si los tips a mano se contaran como 'nada' saldria ahi."""
+        self.assertEqual(
+            [a for a in self.r["avisos"] if a["tipo"] == "sin_tips_del_pool"], [])
+
+    def test_el_diagnostico_lo_dice(self):
+        texto = gusto_export.formatear_diagnostico(self.r, self.INICIO, self.FIN)
+        self.assertIn("tips a mano, no al CSV      tacos-franc-bonita-llc", texto)
+        self.assertRegex(texto, r"a mano\s+215\.50\s+SIN EXPLICAR\s+\+0\.00")
+        self.assertIn("(van vacios: se capturan a mano)", texto)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
